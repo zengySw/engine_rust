@@ -1,4 +1,5 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
 pub enum Block {
     Air,
     Grass,
@@ -6,6 +7,7 @@ pub enum Block {
     Stone,
     Sand,
     Water,
+    Bedrock,
 }
 
 impl Block {
@@ -13,16 +15,15 @@ impl Block {
         !matches!(self, Block::Air | Block::Water)
     }
 
-    /// UV-индекс тайла в атласе текстур (колонка, строка)
-    /// Потом заменим на реальный атлас
     pub fn texture_index(&self) -> u32 {
         match self {
-            Block::Air   => 0,
-            Block::Grass => 1,
-            Block::Dirt  => 2,
-            Block::Stone => 3,
-            Block::Sand  => 4,
-            Block::Water => 5,
+            Block::Air     => 0,
+            Block::Grass   => 1,
+            Block::Dirt    => 2,
+            Block::Stone   => 3,
+            Block::Sand    => 4,
+            Block::Water   => 5,
+            Block::Bedrock => 6,
         }
     }
 }

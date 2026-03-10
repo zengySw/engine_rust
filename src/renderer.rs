@@ -7,8 +7,95 @@ use winit::window::Window;
 use crate::args::Args;
 use crate::camera::Camera;
 use crate::culling::{Frustum, cull_chunks_parallel};
-use crate::world::chunk::{Vertex, CHUNK_W, CHUNK_D, CHUNK_H};
+use crate::world::chunk::Vertex;
 use crate::world::world::ChunkMesh;
+
+pub struct EguiRenderer {
+    pub ctx:      egui::Context,
+    state:        egui_winit::State,
+    renderer:     egui_wgpu::Renderer,
+}
+
+impl EguiRenderer {
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        window: &Window,
+    ) -> Self {
+        let ctx   = egui::Context::default();
+
+        // Тёмная тема
+        ctx.set_visuals(egui::Visuals {
+            window_corner_radius: egui::CornerRadius::same(12),
+            ..egui::Visuals::dark()
+        });
+
+        let state = egui_winit::State::new(
+            ctx.clone(),
+            egui::ViewportId::ROOT,
+            window,
+            None,
+            None,
+            None,
+        );
+        let renderer = egui_wgpu::Renderer::new(device, format, None, 1, false);
+        Self { ctx, state, renderer }
+    }
+
+    pub fn handle_event(
+        &mut self,
+        window: &Window,
+        event: &winit::event::WindowEvent,
+    ) -> egui_winit::EventResponse {
+        self.state.on_window_event(window, event)
+    }
+
+    pub fn draw(
+        &mut self,
+        device:   &wgpu::Device,
+        queue:    &wgpu::Queue,
+        encoder:  &mut wgpu::CommandEncoder,
+        view:     &wgpu::TextureView,
+        window:   &Window,
+        run_ui:   impl FnOnce(&egui::Context),
+    ) {
+        let raw = self.state.take_egui_input(window);
+        let output = self.ctx.run(raw, run_ui);
+
+        self.state.handle_platform_output(window, output.platform_output);
+
+        let tris = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        for (id, delta) in &output.textures_delta.set {
+            self.renderer.update_texture(device, queue, *id, delta);
+        }
+
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [window.inner_size().width, window.inner_size().height],
+            pixels_per_point: output.pixels_per_point,
+        };
+        self.renderer.update_buffers(device, queue, encoder, &tris, &screen);
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("egui"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load, // поверх игры
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        self.renderer.render(&mut pass, &tris, &screen);
+        drop(pass);
+
+        for id in &output.textures_delta.free {
+            self.renderer.free_texture(id);
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -35,7 +122,8 @@ pub struct Renderer {
     // per-chunk буферы
     chunk_buffers:  HashMap<(i32,i32), ChunkBuffer>,
     cull_pool:      rayon::ThreadPool,
-    visible_keys:   Vec<(i32,i32)>, // результат culling прошлого кадра
+    visible_keys:   Vec<(i32,i32)>,
+    pub egui:       EguiRenderer,
 }
 
 impl Renderer {
@@ -139,6 +227,8 @@ impl Renderer {
             multiview:   None,
         });
 
+        let egui = EguiRenderer::new(&device, format, &window);
+
         let cull_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(args.cull_threads())
             .thread_name(|i| format!("cull-{i}"))
@@ -152,6 +242,7 @@ impl Renderer {
             chunk_buffers: HashMap::new(),
             cull_pool,
             visible_keys: Vec::new(),
+            egui,
         }
     }
 
@@ -196,7 +287,7 @@ impl Renderer {
         );
     }
 
-    pub fn render(&mut self, cam: &Camera) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, _cam: &Camera, run_ui: impl FnOnce(&egui::Context)) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view   = output.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(
@@ -234,6 +325,12 @@ impl Renderer {
                 }
             }
         }
+
+        // Рисуем egui поверх игры
+        let window = Arc::clone(&self.window);
+        self.egui.draw(
+            &self.device, &self.queue, &mut enc, &view, &window, run_ui,
+        );
 
         self.queue.submit(std::iter::once(enc.finish()));
         output.present();

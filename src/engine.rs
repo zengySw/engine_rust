@@ -9,22 +9,33 @@ use winit::{
 };
 
 use crate::args::Args;
-use crate::camera::{Camera, MoveDir};
+use crate::camera::Camera;
+use crate::inventory::Inventory;
 use crate::menu::{EscMenu, MenuAction, Settings};
+use crate::player::Player;
 use crate::renderer::Renderer;
+use crate::world::chunk::spawn_plane_floor_y;
 use crate::world::world::World;
 
 pub struct Engine {
+    args:     Args,
+    world_seed: u32,
     renderer: Renderer,
     camera:   Camera,
     world:    World,
     keys:     HashSet<KeyCode>,
     focused:  bool,
     menu:     EscMenu,
+    inventory: Inventory,
+    day_time: f32,
+    player: Player,
+    jump_was_down: bool,
 }
 
 impl Engine {
     pub async fn new(args: Args) -> (Self, EventLoop<()>) {
+        let world_seed: u32 = 42;
+
         let event_loop = EventLoop::new().expect("event loop");
         event_loop.set_control_flow(ControlFlow::Poll);
 
@@ -36,8 +47,10 @@ impl Engine {
             .expect("window");
 
         let renderer = Renderer::new(window, &args).await;
-        let camera   = Camera::new(glam::Vec3::new(0.0, 90.0, 0.0));
-        let world    = World::new(42, &args);
+        let spawn_y  = spawn_plane_floor_y(world_seed);
+        let player   = Player::new(glam::Vec3::new(0.0, spawn_y, 0.0));
+        let camera   = Camera::new(player.eye_pos());
+        let world    = World::new(world_seed, &args);
 
         let settings = Settings {
             render_dist: args.render_dist,
@@ -47,8 +60,22 @@ impl Engine {
             show_fps:    true,
         };
         let menu = EscMenu::new(settings);
+        let inventory = Inventory::new();
 
-        (Self { renderer, camera, world, keys: HashSet::new(), focused: false, menu },
+        (Self {
+            args: args.clone(),
+            world_seed,
+            renderer,
+            camera,
+            world,
+            keys: HashSet::new(),
+            focused: false,
+            menu,
+            inventory,
+            day_time: 0.25,
+            player,
+            jump_was_down: false,
+        },
          event_loop)
     }
 
@@ -62,9 +89,8 @@ impl Engine {
             match &event {
                 Event::WindowEvent { event: we, .. } => {
                     // Сначала отдаём событие egui
-                    let resp = self.renderer.egui.handle_event(
-                        self.renderer.window(), we
-                    );
+                    let window = self.renderer.window_arc();
+                    let resp = self.renderer.egui.handle_event(&window, we);
 
                     // Если egui не потребил — обрабатываем сами
                     if !resp.consumed {
@@ -73,7 +99,7 @@ impl Engine {
 
                             WindowEvent::Focused(f) => {
                                 self.focused = *f;
-                                if *f && !self.menu.open { self.grab_cursor(true); }
+                                if *f && !self.menu.open && !self.inventory.open { self.grab_cursor(true); }
                             }
 
                             WindowEvent::KeyboardInput { event: ke, .. } => {
@@ -86,8 +112,26 @@ impl Engine {
                                     if key == KeyCode::Escape
                                         && ke.state == ElementState::Pressed
                                     {
-                                        self.menu.toggle();
-                                        if self.menu.open {
+                                        if self.inventory.open {
+                                            self.inventory.open = false;
+                                            self.grab_cursor(true);
+                                        } else {
+                                            self.menu.toggle();
+                                            if self.menu.open {
+                                                self.inventory.open = false;
+                                                self.grab_cursor(false);
+                                            } else {
+                                                self.grab_cursor(true);
+                                            }
+                                        }
+                                    }
+
+                                    if key == KeyCode::KeyE
+                                        && ke.state == ElementState::Pressed
+                                        && !self.menu.open
+                                    {
+                                        self.inventory.toggle();
+                                        if self.inventory.open {
                                             self.grab_cursor(false);
                                         } else {
                                             self.grab_cursor(true);
@@ -107,7 +151,7 @@ impl Engine {
                 Event::DeviceEvent {
                     event: DeviceEvent::MouseMotion { delta: (dx, dy) }, ..
                 } => {
-                    if self.focused && !self.menu.open {
+                    if self.focused && !self.menu.open && !self.inventory.open {
                         self.camera.rotate(*dx as f32, *dy as f32);
                     }
                 }
@@ -116,6 +160,11 @@ impl Engine {
                     let now = Instant::now();
                     let dt  = now.duration_since(last_time).as_secs_f32().min(0.05);
                     last_time = now;
+
+                    // day/night cycle (0..1)
+                    let day_len = 300.0;
+                    self.day_time += dt / day_len;
+                    if self.day_time >= 1.0 { self.day_time -= 1.0; }
 
                     frame_count += 1;
                     if fps_timer.elapsed().as_secs_f32() >= 1.0 {
@@ -133,7 +182,7 @@ impl Engine {
                     }
 
                     // Игровой update только когда меню закрыто
-                    if !self.menu.open {
+                    if !self.menu.open && !self.inventory.open {
                         self.update(dt);
                     }
 
@@ -142,10 +191,13 @@ impl Engine {
                     self.camera.speed       = self.menu.settings.fly_speed;
 
                     self.renderer.update_visibility(&self.camera);
+                    self.renderer.update_camera(&self.camera, self.day_time);
 
                     let menu = &mut self.menu;
+                    let inventory = &mut self.inventory;
                     let show_fps = menu.settings.show_fps;
                     let fps = fps_display;
+                    let mut menu_action = MenuAction::None;
 
                     match self.renderer.render(&self.camera, |ctx| {
                         // FPS оверлей (когда меню закрыто)
@@ -162,22 +214,31 @@ impl Engine {
                                 });
                         }
 
-                        // Меню паузы
-                        let action = menu.draw(ctx);
-                        match action {
-                            MenuAction::Resume => {
-                                menu.open = false;
-                            }
-                            MenuAction::Exit => {
-                                std::process::exit(0);
-                            }
-                            MenuAction::None => {}
+                        if !menu.open {
+                            inventory.draw_hotbar(ctx);
+                            inventory.draw(ctx);
                         }
+
+                        // Меню паузы
+                        menu_action = menu.draw(ctx);
                     }) {
                         Ok(_) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)
                             => self.renderer.reconfigure(),
                         Err(e) => log::error!("{e}"),
+                    }
+
+                    match menu_action {
+                        MenuAction::Resume => {
+                            self.menu.open = false;
+                        }
+                        MenuAction::RegenerateWorld => {
+                            self.regenerate_world();
+                        }
+                        MenuAction::Exit => {
+                            std::process::exit(0);
+                        }
+                        MenuAction::None => {}
                     }
 
                     // Применяем Resume после рендера (чтобы не было borrow conflict)
@@ -193,14 +254,26 @@ impl Engine {
     }
 
     fn update(&mut self, dt: f32) {
-        if self.keys.contains(&KeyCode::KeyW) { self.camera.move_dir(MoveDir::Forward,  dt); }
-        if self.keys.contains(&KeyCode::KeyS) { self.camera.move_dir(MoveDir::Backward, dt); }
-        if self.keys.contains(&KeyCode::KeyA) { self.camera.move_dir(MoveDir::Left,     dt); }
-        if self.keys.contains(&KeyCode::KeyD) { self.camera.move_dir(MoveDir::Right,    dt); }
-        if self.keys.contains(&KeyCode::Space)     { self.camera.move_dir(MoveDir::Up,   dt); }
-        if self.keys.contains(&KeyCode::ShiftLeft) { self.camera.move_dir(MoveDir::Down, dt); }
+        self.world.update(self.player.pos.x, self.player.pos.z);
 
-        self.world.update(self.camera.pos.x, self.camera.pos.z);
+        let mut input = glam::Vec2::ZERO;
+        if self.keys.contains(&KeyCode::KeyD) { input.x += 1.0; }
+        if self.keys.contains(&KeyCode::KeyA) { input.x -= 1.0; }
+        if self.keys.contains(&KeyCode::KeyW) { input.y += 1.0; }
+        if self.keys.contains(&KeyCode::KeyS) { input.y -= 1.0; }
+        let jump_down = self.keys.contains(&KeyCode::Space);
+        let jump_pressed = jump_down && !self.jump_was_down;
+        self.jump_was_down = jump_down;
+
+        self.player.simulate(
+            dt,
+            input,
+            jump_pressed,
+            self.camera.yaw,
+            self.camera.speed,
+            &self.world,
+        );
+        self.camera.pos = self.player.eye_pos();
 
         if !self.world.removed.is_empty() {
             self.renderer.remove_chunks(&self.world.removed);
@@ -213,7 +286,25 @@ impl Engine {
             self.renderer.update_chunks(batch);
         }
 
-        self.renderer.update_camera(&self.camera);
+    }
+
+    fn regenerate_world(&mut self) {
+        self.world_seed = next_seed(self.world_seed);
+        log::info!("Regenerating world with seed {}", self.world_seed);
+
+        self.renderer.clear_chunks();
+        self.world = World::new(self.world_seed, &self.args);
+
+        let spawn_y = spawn_plane_floor_y(self.world_seed);
+        self.player = Player::new(glam::Vec3::new(0.0, spawn_y, 0.0));
+        self.camera.pos = self.player.eye_pos();
+        self.day_time = 0.25;
+        self.jump_was_down = false;
+        self.keys.clear();
+
+        self.menu.open = false;
+        self.inventory.open = false;
+        self.grab_cursor(true);
     }
 
     fn grab_cursor(&self, grab: bool) {
@@ -227,4 +318,13 @@ impl Engine {
             w.set_cursor_visible(true);
         }
     }
+}
+
+fn next_seed(seed: u32) -> u32 {
+    // Xorshift32 step gives a new deterministic seed each regeneration.
+    let mut x = seed ^ 0x9E37_79B9;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    if x == 0 { 1 } else { x }
 }

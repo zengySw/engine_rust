@@ -32,10 +32,6 @@ impl Camera {
         ).normalize()
     }
 
-    pub fn right(&self) -> Vec3 {
-        self.forward().cross(Vec3::Y).normalize()
-    }
-
     /// View-матрица (куда смотрит камера)
     pub fn view(&self) -> Mat4 {
         Mat4::look_to_rh(self.pos, self.forward(), Vec3::Y)
@@ -53,19 +49,6 @@ impl Camera {
         self.projection(width, height) * self.view()
     }
 
-    /// Движение (вызывать из update с dt)
-    pub fn move_dir(&mut self, dir: MoveDir, dt: f32) {
-        let speed = self.speed * dt;
-        match dir {
-            MoveDir::Forward  => self.pos += self.forward() * speed,
-            MoveDir::Backward => self.pos -= self.forward() * speed,
-            MoveDir::Left     => self.pos -= self.right()   * speed,
-            MoveDir::Right    => self.pos += self.right()   * speed,
-            MoveDir::Up       => self.pos += Vec3::Y        * speed,
-            MoveDir::Down     => self.pos -= Vec3::Y        * speed,
-        }
-    }
-
     /// Вращение мышью (delta_x, delta_y в пикселях)
     pub fn rotate(&mut self, dx: f32, dy: f32) {
         self.yaw   += dx * self.sensitivity;
@@ -73,5 +56,3 @@ impl Camera {
         self.pitch   = self.pitch.clamp(-89.0, 89.0); // не переворачиваться
     }
 }
-
-pub enum MoveDir { Forward, Backward, Left, Right, Up, Down }

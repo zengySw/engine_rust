@@ -217,4 +217,24 @@ impl World {
     }
 
     pub fn chunk_count(&self) -> usize { self.chunks.len() }
+
+    pub fn is_solid_at_world(&self, wx: i32, wy: i32, wz: i32) -> bool {
+        if wy < 0 {
+            return true;
+        }
+        if wy >= super::chunk::CHUNK_H as i32 {
+            return false;
+        }
+
+        let cx = wx.div_euclid(CHUNK_W as i32);
+        let cz = wz.div_euclid(CHUNK_D as i32);
+        let lx = wx.rem_euclid(CHUNK_W as i32) as usize;
+        let lz = wz.rem_euclid(CHUNK_D as i32) as usize;
+
+        if let Some(chunk) = self.chunks.get(&(cx, cz)) {
+            return chunk.get(lx, wy as usize, lz).is_solid();
+        }
+
+        false
+    }
 }

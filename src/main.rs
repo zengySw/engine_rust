@@ -2,6 +2,9 @@ mod args;
 mod camera;
 mod culling;
 mod engine;
+mod inventory;
+mod menu;
+mod player;
 mod renderer;
 mod world;
 

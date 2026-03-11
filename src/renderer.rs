@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
+use image::{imageops::FilterType, Rgba, RgbaImage};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -26,7 +28,7 @@ impl EguiRenderer {
 
         // Тёмная тема
         ctx.set_visuals(egui::Visuals {
-            window_corner_radius: egui::CornerRadius::same(12),
+            window_rounding: egui::Rounding::same(12.0),
             ..egui::Visuals::dark()
         });
 
@@ -36,9 +38,8 @@ impl EguiRenderer {
             window,
             None,
             None,
-            None,
         );
-        let renderer = egui_wgpu::Renderer::new(device, format, None, 1, false);
+        let renderer = egui_wgpu::Renderer::new(device, format, None, 1);
         Self { ctx, state, renderer }
     }
 
@@ -101,11 +102,19 @@ impl EguiRenderer {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    time_of_day: [f32; 4],
 }
 
 struct ChunkBuffer {
     buf:   wgpu::Buffer,
     count: u32,
+}
+
+struct BlockTextures {
+    bind_group: wgpu::BindGroup,
+    _texture:   wgpu::Texture,
+    _view:      wgpu::TextureView,
+    _sampler:   wgpu::Sampler,
 }
 
 pub struct Renderer {
@@ -118,6 +127,8 @@ pub struct Renderer {
     depth_texture:  wgpu::TextureView,
     cam_buffer:     wgpu::Buffer,
     cam_bind_group: wgpu::BindGroup,
+    block_textures: BlockTextures,
+    day_time:       f32,
 
     // per-chunk буферы
     chunk_buffers:  HashMap<(i32,i32), ChunkBuffer>,
@@ -176,7 +187,7 @@ impl Renderer {
         let cam_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cam_bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0, visibility: wgpu::ShaderStages::VERTEX,
+                binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false, min_binding_size: None,
@@ -192,9 +203,35 @@ impl Renderer {
             }],
         });
 
+        let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("block_tex_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let block_textures = create_block_textures(&device, &queue, &tex_bgl);
+
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("layout"), bind_group_layouts: &[&cam_bgl], push_constant_ranges: &[],
+            label: Some("layout"),
+            bind_group_layouts: &[&cam_bgl, &tex_bgl],
+            push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -238,7 +275,8 @@ impl Renderer {
         Self {
             window, surface, device, queue, config,
             pipeline, depth_texture,
-            cam_buffer, cam_bind_group,
+            cam_buffer, cam_bind_group, block_textures,
+            day_time: 0.25,
             chunk_buffers: HashMap::new(),
             cull_pool,
             visible_keys: Vec::new(),
@@ -270,9 +308,16 @@ impl Renderer {
         for key in keys { self.chunk_buffers.remove(key); }
     }
 
-    pub fn update_camera(&self, cam: &Camera) {
+    pub fn clear_chunks(&mut self) {
+        self.chunk_buffers.clear();
+        self.visible_keys.clear();
+    }
+
+    pub fn update_camera(&mut self, cam: &Camera, day_time: f32) {
+        self.day_time = day_time;
         let u = CameraUniform {
             view_proj: cam.view_proj(self.config.width, self.config.height).to_cols_array_2d(),
+            time_of_day: [day_time, 0.0, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.cam_buffer, 0, bytemuck::bytes_of(&u));
     }
@@ -300,7 +345,7 @@ impl Renderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view, resolve_target: None,
                     ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(wgpu::Color { r:0.53, g:0.81, b:0.98, a:1. }),
+                        load:  wgpu::LoadOp::Clear(sky_color_from_time(self.day_time)),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -316,6 +361,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.cam_bind_group, &[]);
+            pass.set_bind_group(1, &self.block_textures.bind_group, &[]);
 
             // Используем предпосчитанный список видимых чанков
             for &key in &self.visible_keys {
@@ -349,9 +395,36 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
+    pub fn window_arc(&self) -> Arc<Window> {
+        Arc::clone(&self.window)
+    }
+
     pub fn window(&self) -> &Window { &self.window }
     #[allow(dead_code)]
     pub fn chunk_count(&self) -> usize { self.chunk_buffers.len() }
+}
+
+fn sky_color_from_time(t: f32) -> wgpu::Color {
+    let angle = t * std::f32::consts::TAU;
+    let sun_y = angle.sin();
+    let day = smoothstep(-0.05, 0.15, sun_y);
+    let night = 1.0 - day;
+
+    let day_sky = [0.53, 0.81, 0.98];
+    let night_sky = [0.02, 0.03, 0.08];
+    let dusk_sky = [0.95, 0.55, 0.25];
+    let dusk = smoothstep(0.25, 0.65, 1.0 - sun_y.abs()) * night;
+
+    let r = (day_sky[0] * day + night_sky[0] * night) * (1.0 - dusk) + dusk_sky[0] * dusk;
+    let g = (day_sky[1] * day + night_sky[1] * night) * (1.0 - dusk) + dusk_sky[1] * dusk;
+    let b = (day_sky[2] * day + night_sky[2] * night) * (1.0 - dusk) + dusk_sky[2] * dusk;
+
+    wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: 1.0 }
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn make_depth_texture(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
@@ -364,4 +437,193 @@ fn make_depth_texture(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureVie
         usage:       wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     }).create_view(&Default::default())
+}
+
+fn create_block_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+) -> BlockTextures {
+    const TEX_NAMES: [&str; 10] = [
+        "air",
+        "grass",
+        "dirt",
+        "stone",
+        "sand",
+        "water",
+        "bedrock",
+        "log",
+        "logBottom",
+        "leaves",
+    ];
+
+    let mut layers: Vec<RgbaImage> = Vec::with_capacity(TEX_NAMES.len());
+    let mut base_size = None::<(u32, u32)>;
+
+    for name in TEX_NAMES {
+        let img = if name == "air" {
+            RgbaImage::from_pixel(16, 16, Rgba([0, 0, 0, 0]))
+        } else {
+            load_block_texture(name)
+        };
+
+        let prepared = if let Some((w, h)) = base_size {
+            if img.width() == w && img.height() == h {
+                img
+            } else {
+                log::warn!(
+                    "Resizing block texture '{}' from {}x{} to {}x{}",
+                    name,
+                    img.width(),
+                    img.height(),
+                    w,
+                    h
+                );
+                image::imageops::resize(&img, w, h, FilterType::Nearest)
+            }
+        } else {
+            base_size = Some((img.width(), img.height()));
+            img
+        };
+
+        layers.push(prepared);
+    }
+
+    let (width, height) = base_size.unwrap_or((16, 16));
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("block_texture_array"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: layers.len() as u32,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    for (layer, img) in layers.iter().enumerate() {
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer as u32,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            img.as_raw(),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("block_texture_array_view"),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("block_sampler"),
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("block_tex_bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+
+    BlockTextures {
+        bind_group,
+        _texture: texture,
+        _view: view,
+        _sampler: sampler,
+    }
+}
+
+fn load_block_texture(name: &str) -> RgbaImage {
+    let assets_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("assets");
+    let candidates = [
+        assets_root.join("blocks").join(format!("{name}.png")),
+        assets_root.join("blocks").join(format!("{name}.jpg")),
+        assets_root.join("blocks").join(format!("{name}.jpeg")),
+        assets_root
+            .join("minecraft")
+            .join("textures")
+            .join("block")
+            .join(format!("{name}.png")),
+        assets_root
+            .join("minecraft")
+            .join("textures")
+            .join("block")
+            .join(format!("{name}.jpg")),
+        assets_root
+            .join("minecraft")
+            .join("textures")
+            .join("block")
+            .join(format!("{name}.jpeg")),
+    ];
+
+    for path in candidates {
+        if !path.exists() {
+            continue;
+        }
+        match image::open(&path) {
+            Ok(img) => return img.to_rgba8(),
+            Err(err) => {
+                log::warn!("Failed to decode {:?}: {}", path, err);
+            }
+        }
+    }
+
+    log::warn!("Missing block texture '{}', using fallback color", name);
+    fallback_block_texture(name)
+}
+
+fn fallback_block_texture(name: &str) -> RgbaImage {
+    let color = match name {
+        "air" => [0, 0, 0, 0],
+        "grass" => [72, 148, 46, 255],
+        "dirt" => [122, 84, 46, 255],
+        "stone" => [120, 120, 120, 255],
+        "sand" => [217, 204, 128, 255],
+        "water" => [46, 107, 199, 255],
+        "bedrock" => [38, 32, 32, 255],
+        "log" => [115, 77, 46, 255],
+        "logBottom" => [145, 112, 72, 255],
+        "leaves" => [46, 140, 56, 255],
+        _ => [255, 0, 255, 255],
+    };
+    RgbaImage::from_pixel(16, 16, Rgba(color))
 }

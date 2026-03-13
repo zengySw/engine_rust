@@ -644,7 +644,6 @@ impl Chunk {
             }
         }
         place_trees(&mut blocks, cx, cz, seed, &hmap);
-        place_surface_features(&mut blocks, cx, cz, seed, &hmap);
         Self {
             cx,
             cz,
@@ -885,52 +884,6 @@ fn place_trees(blocks: &mut [Block], cx: i32, cz: i32, seed: u32, hmap: &Heightm
                             blocks[li] = Block::Leaves;
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-fn place_surface_features(blocks: &mut [Block], cx: i32, cz: i32, seed: u32, hmap: &Heightmap) {
-    let world_x0 = cx * CHUNK_W as i32;
-    let world_z0 = cz * CHUNK_D as i32;
-
-    for x in 1..(CHUNK_W - 1) {
-        let wx = world_x0 + x as i32;
-        for z in 1..(CHUNK_D - 1) {
-            let wz = world_z0 + z as i32;
-            let biome_here = hmap.biome[x][z];
-            if biome::is_ocean(biome_here) {
-                continue;
-            }
-
-            let surface = hmap.surface[x][z] as usize;
-            if surface + 2 >= CHUNK_H {
-                continue;
-            }
-            let top = blocks[idx(x, surface, z)];
-            let above_i = idx(x, surface + 1, z);
-            if blocks[above_i] != Block::Air {
-                continue;
-            }
-
-            let h = hash3(seed ^ 0x6E62_7A11, wx, surface as i32, wz);
-            let r = (h & 0xffff) as f32 / 65535.0;
-
-            // Sparse low bushes on grassy terrain.
-            if matches!(top, Block::Grass | Block::Dirt) && r < 0.020 {
-                blocks[above_i] = Block::Leaves;
-                if surface + 2 < CHUNK_H && ((h >> 16) & 0b11) == 0 {
-                    blocks[idx(x, surface + 2, z)] = Block::Leaves;
-                }
-                continue;
-            }
-
-            // Tiny rocky outcrops in dry biomes.
-            if top == Block::Sand && r < 0.012 {
-                blocks[above_i] = Block::Stone;
-                if surface + 2 < CHUNK_H && ((h >> 20) & 1) == 1 {
-                    blocks[idx(x, surface + 2, z)] = Block::Stone;
                 }
             }
         }

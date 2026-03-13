@@ -51,6 +51,20 @@ impl Player {
         self.pos + Vec3::Y * self.eye_height
     }
 
+    pub fn overlaps_block(&self, bx: i32, by: i32, bz: i32) -> bool {
+        let p_min = Vec3::new(self.pos.x - self.radius, self.pos.y, self.pos.z - self.radius);
+        let p_max = Vec3::new(self.pos.x + self.radius, self.pos.y + self.height, self.pos.z + self.radius);
+        let b_min = Vec3::new(bx as f32, by as f32, bz as f32);
+        let b_max = b_min + Vec3::ONE;
+
+        p_min.x < b_max.x
+            && p_max.x > b_min.x
+            && p_min.y < b_max.y
+            && p_max.y > b_min.y
+            && p_min.z < b_max.z
+            && p_max.z > b_min.z
+    }
+
     pub fn teleport(&mut self, pos: Vec3) {
         self.pos = pos;
         self.vel = Vec3::ZERO;

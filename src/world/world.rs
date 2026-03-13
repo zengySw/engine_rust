@@ -6,6 +6,7 @@ use super::biome::Biome;
 use super::block::Block;
 use super::chunk::{idx, Chunk, Vertex, CHUNK_D, CHUNK_W};
 use crate::args::Args;
+use crate::save;
 
 const CARDINAL_NEIGHBORS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
@@ -26,6 +27,9 @@ pub struct World {
     pub chunks: HashMap<(i32, i32), Arc<Chunk>>,
     seed: u32,
     render_dist: i32,
+    modified_blocks: save::BlockMap,
+    pending_block_mods: HashMap<(i32, i32), Vec<(i32, i32, i32, Block)>>,
+    save_dirty: bool,
 
     gen_tx: SyncSender<(i32, i32, u32)>,
     gen_rx: Receiver<((i32, i32), Chunk)>,
@@ -89,10 +93,13 @@ impl World {
             }
         });
 
-        Self {
+        let mut world = Self {
             chunks: HashMap::new(),
             seed,
             render_dist,
+            modified_blocks: HashMap::new(),
+            pending_block_mods: HashMap::new(),
+            save_dirty: false,
             gen_tx,
             gen_rx,
             in_flight_gen: HashSet::new(),
@@ -102,7 +109,10 @@ impl World {
             dirty_mesh: HashSet::new(),
             ready_meshes: Vec::new(),
             removed: Vec::new(),
-        }
+        };
+
+        world.load_saved_blocks();
+        world
     }
 
     pub fn update(&mut self, player_x: f32, player_z: f32) {
@@ -121,6 +131,18 @@ impl World {
 
     pub fn set_render_distance(&mut self, render_dist: i32) {
         self.render_dist = render_dist.clamp(2, 32);
+    }
+
+    pub fn save_if_dirty(&mut self) {
+        if !self.save_dirty {
+            return;
+        }
+        save::save_world_blocks(self.seed, &self.modified_blocks);
+        self.save_dirty = false;
+    }
+
+    pub fn save_all(&self) {
+        save::save_world_blocks(self.seed, &self.modified_blocks);
     }
 
     pub fn drain_ready_meshes(&mut self, max: usize) -> Vec<((i32, i32), ChunkMesh)> {
@@ -183,7 +205,10 @@ impl World {
         let key = (cx, cz);
 
         let Some(chunk_arc) = self.chunks.get(&key).cloned() else {
-            return false;
+            self.upsert_pending_block_mod(key, wx, wy, wz, block);
+            self.modified_blocks.insert((wx, wy, wz), block);
+            self.save_dirty = true;
+            return true;
         };
 
         let current = chunk_arc.get(lx, wy as usize, lz);
@@ -202,6 +227,9 @@ impl World {
         };
         self.chunks.insert(key, Arc::new(new_chunk));
         self.mark_chunk_and_neighbors_dirty(key);
+        self.upsert_pending_block_mod(key, wx, wy, wz, block);
+        self.modified_blocks.insert((wx, wy, wz), block);
+        self.save_dirty = true;
         true
     }
 
@@ -256,6 +284,7 @@ impl World {
         while let Ok((key, chunk)) = self.gen_rx.try_recv() {
             self.in_flight_gen.remove(&key);
             self.chunks.insert(key, Arc::new(chunk));
+            self.apply_pending_mods_for_chunk(key);
             self.mark_chunk_and_neighbors_dirty(key);
         }
     }
@@ -291,9 +320,14 @@ impl World {
     }
 
     fn receive_ready_meshes(&mut self) {
-        while let Ok(mesh) = self.mesh_rx.try_recv() {
-            self.in_flight_mesh.remove(&mesh.0);
-            self.ready_meshes.push(mesh);
+        while let Ok((key, mesh)) = self.mesh_rx.try_recv() {
+            self.in_flight_mesh.remove(&key);
+
+            // Drop stale mesh outputs for chunks that were unloaded or already re-marked dirty.
+            if !self.chunks.contains_key(&key) || self.dirty_mesh.contains(&key) {
+                continue;
+            }
+            self.ready_meshes.push((key, mesh));
         }
     }
 
@@ -313,6 +347,83 @@ impl World {
             self.in_flight_mesh.remove(key);
         }
         self.removed.extend_from_slice(&unload);
+    }
+
+    fn load_saved_blocks(&mut self) {
+        self.modified_blocks = save::load_world_blocks(self.seed);
+        let entries: Vec<_> = self
+            .modified_blocks
+            .iter()
+            .map(|(&(x, y, z), &block)| (x, y, z, block))
+            .collect();
+        for (wx, wy, wz, block) in entries {
+            if wy < 0 || wy >= super::chunk::CHUNK_H as i32 {
+                continue;
+            }
+            let cx = wx.div_euclid(CHUNK_W as i32);
+            let cz = wz.div_euclid(CHUNK_D as i32);
+            self.upsert_pending_block_mod((cx, cz), wx, wy, wz, block);
+        }
+        if !self.modified_blocks.is_empty() {
+            log::info!(
+                "Loaded {} saved block modifications for seed {}",
+                self.modified_blocks.len(),
+                self.seed
+            );
+        }
+    }
+
+    fn upsert_pending_block_mod(
+        &mut self,
+        key: (i32, i32),
+        wx: i32,
+        wy: i32,
+        wz: i32,
+        block: Block,
+    ) {
+        let mods = self.pending_block_mods.entry(key).or_default();
+        if let Some(existing) = mods
+            .iter_mut()
+            .find(|(x, y, z, _)| *x == wx && *y == wy && *z == wz)
+        {
+            existing.3 = block;
+        } else {
+            mods.push((wx, wy, wz, block));
+        }
+    }
+
+    fn apply_pending_mods_for_chunk(&mut self, key: (i32, i32)) {
+        let Some(mods) = self.pending_block_mods.get(&key) else {
+            return;
+        };
+        let Some(chunk_arc) = self.chunks.get(&key).cloned() else {
+            return;
+        };
+
+        let mut blocks = chunk_arc.blocks.to_vec().into_boxed_slice();
+        let mut changed = false;
+        for &(wx, wy, wz, block) in mods {
+            if wy < 0 || wy >= super::chunk::CHUNK_H as i32 {
+                continue;
+            }
+            let lx = wx.rem_euclid(CHUNK_W as i32) as usize;
+            let lz = wz.rem_euclid(CHUNK_D as i32) as usize;
+            let i = idx(lx, wy as usize, lz);
+            if blocks[i] != block {
+                blocks[i] = block;
+                changed = true;
+            }
+        }
+
+        if changed {
+            let new_chunk = Chunk {
+                cx: chunk_arc.cx,
+                cz: chunk_arc.cz,
+                blocks: blocks.into(),
+                heightmap: Arc::clone(&chunk_arc.heightmap),
+            };
+            self.chunks.insert(key, Arc::new(new_chunk));
+        }
     }
 
     fn mark_chunk_and_neighbors_dirty(&mut self, key: (i32, i32)) {

@@ -8,6 +8,7 @@ mod modding;
 mod player;
 mod raytracing;
 mod renderer;
+mod save;
 mod world;
 
 fn main() {

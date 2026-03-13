@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 use winit::{
     dpi::LogicalSize,
-    event::{DeviceEvent, Event, WindowEvent, ElementState},
+    event::{DeviceEvent, ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{EventLoop, ControlFlow},
     keyboard::{KeyCode, PhysicalKey},
     window::{WindowBuilder, CursorGrabMode},
@@ -15,6 +15,8 @@ use crate::menu::{EscMenu, MenuAction, Settings};
 use crate::modding::{self, ApiCommand, ApiSnapshot, ModApiRuntime};
 use crate::player::Player;
 use crate::renderer::Renderer;
+use crate::save;
+use crate::world::block::Block;
 use crate::world::chunk::{spawn_point, CHUNK_D, CHUNK_W};
 use crate::world::world::World;
 use crate::world::biome::Biome;
@@ -37,6 +39,9 @@ pub struct Engine {
     applied_render_dist: i32,
     applied_vsync: bool,
     applied_lighting: [f32; 4],
+    break_block_requested: bool,
+    place_block_requested: bool,
+    last_saved_settings: Settings,
 }
 
 impl Engine {
@@ -55,32 +60,38 @@ impl Engine {
             .build(&event_loop)
             .expect("window");
 
-        let renderer = Renderer::new(window, &args).await;
+        let mut effective_args = args.clone();
+        let loaded_settings = save::load_settings();
+        if let Some(saved) = loaded_settings {
+            effective_args.render_dist = saved.render_dist.clamp(2, 32);
+            effective_args.vsync = saved.vsync;
+        }
+
+        let renderer = Renderer::new(window, &effective_args).await;
         let (spawn_x, spawn_y, spawn_z) = spawn_point(world_seed);
         let player   = Player::new(glam::Vec3::new(spawn_x, spawn_y, spawn_z));
-        let camera   = Camera::new(player.eye_pos());
-        let world    = World::new(world_seed, &args);
+        let mut camera = Camera::new(player.eye_pos());
+        let world    = World::new(world_seed, &effective_args);
 
-        let ambient_boost = 1.02;
-        let sun_softness = 0.34;
-        let fog_density = 1.0;
-        let exposure = 1.00;
-        let settings = Settings {
-            render_dist: args.render_dist,
+        let default_settings = Settings {
+            render_dist: effective_args.render_dist,
             fly_speed:   camera.speed,
             mouse_sens:  camera.sensitivity,
-            vsync:       args.vsync,
+            vsync:       effective_args.vsync,
             show_fps:    true,
-            ambient_boost,
-            sun_softness,
-            fog_density,
-            exposure,
+            ambient_boost: 1.02,
+            sun_softness: 0.34,
+            fog_density: 1.0,
+            exposure: 1.00,
         };
+        let settings = loaded_settings.unwrap_or(default_settings);
+        camera.speed = settings.fly_speed;
+        camera.sensitivity = settings.mouse_sens;
         let menu = EscMenu::new(settings);
         let inventory = Inventory::new();
 
         let engine = Self {
-            args: args.clone(),
+            args: effective_args,
             world_seed,
             renderer,
             camera,
@@ -94,14 +105,17 @@ impl Engine {
             jump_was_down: false,
             debug_overlay: false,
             mod_api_runtime,
-            applied_render_dist: args.render_dist,
-            applied_vsync: args.vsync,
+            applied_render_dist: settings.render_dist,
+            applied_vsync: settings.vsync,
             applied_lighting: [
-                ambient_boost,
-                sun_softness,
-                fog_density,
-                exposure,
+                settings.ambient_boost,
+                settings.sun_softness,
+                settings.fog_density,
+                settings.exposure,
             ],
+            break_block_requested: false,
+            place_block_requested: false,
+            last_saved_settings: settings,
         };
 
         engine.update_api_snapshot();
@@ -156,6 +170,12 @@ impl Engine {
                                         ElementState::Released => { self.keys.remove(&key); }
                                     }
 
+                                    if ke.state == ElementState::Pressed && !ke.repeat {
+                                        if let Some(slot) = digit_key_to_hotbar_slot(key) {
+                                            self.inventory.select_hotbar_slot(slot);
+                                        }
+                                    }
+
                                     if key == KeyCode::Escape
                                         && ke.state == ElementState::Pressed
                                     {
@@ -183,6 +203,32 @@ impl Engine {
                                         } else {
                                             self.grab_cursor(true);
                                         }
+                                    }
+                                }
+                            }
+
+                            WindowEvent::MouseInput { state, button, .. } => {
+                                if *state == ElementState::Pressed
+                                    && !self.menu.open
+                                    && !self.inventory.open
+                                {
+                                    match button {
+                                        MouseButton::Left => self.break_block_requested = true,
+                                        MouseButton::Right => self.place_block_requested = true,
+                                        _ => {}
+                                    }
+                                }
+                            }
+
+                            WindowEvent::MouseWheel { delta, .. } => {
+                                if !self.menu.open {
+                                    let amount = match delta {
+                                        MouseScrollDelta::LineDelta(_, y) => *y,
+                                        MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 35.0,
+                                    };
+                                    if amount.abs() > 0.01 {
+                                        let step = if amount > 0.0 { -1 } else { 1 };
+                                        self.inventory.cycle_hotbar(step);
                                     }
                                 }
                             }
@@ -238,6 +284,7 @@ impl Engine {
                     self.camera.sensitivity = self.menu.settings.mouse_sens;
                     self.camera.speed       = self.menu.settings.fly_speed;
                     self.apply_runtime_graphics_settings();
+                    self.save_settings_if_changed();
 
                     self.renderer.update_visibility(&self.camera);
                     self.renderer.update_camera(&self.camera, self.day_time);
@@ -296,6 +343,8 @@ impl Engine {
                             self.regenerate_world(None);
                         }
                         MenuAction::Exit => {
+                            self.world.save_all();
+                            save::save_settings(&self.menu.settings);
                             std::process::exit(0);
                         }
                         MenuAction::None => {}
@@ -335,6 +384,7 @@ impl Engine {
             &self.world,
         );
         self.camera.pos = self.player.eye_pos();
+        self.handle_block_interaction();
 
         if !self.world.removed.is_empty() {
             self.renderer.remove_chunks(&self.world.removed);
@@ -345,10 +395,12 @@ impl Engine {
         if !batch.is_empty() {
             self.renderer.update_chunks(batch);
         }
+        self.world.save_if_dirty();
 
     }
 
     fn regenerate_world(&mut self, seed_override: Option<u32>) {
+        self.world.save_all();
         self.world_seed = seed_override.unwrap_or_else(|| next_seed(self.world_seed));
         log::info!("Regenerating world with seed {}", self.world_seed);
 
@@ -404,6 +456,86 @@ impl Engine {
         }
     }
 
+    fn save_settings_if_changed(&mut self) {
+        if !settings_changed(&self.last_saved_settings, &self.menu.settings) {
+            return;
+        }
+        save::save_settings(&self.menu.settings);
+        self.last_saved_settings = self.menu.settings;
+    }
+
+    fn handle_block_interaction(&mut self) {
+        let break_req = std::mem::take(&mut self.break_block_requested);
+        let place_req = std::mem::take(&mut self.place_block_requested);
+        if !break_req && !place_req {
+            return;
+        }
+
+        let Some(hit) = self.raycast_block_target(6.0) else {
+            return;
+        };
+
+        let mut changed = false;
+
+        if break_req {
+            changed |= self
+                .world
+                .set_block_at_world(hit.block.0, hit.block.1, hit.block.2, Block::Air);
+        }
+
+        if place_req {
+            if let Some((px, py, pz)) = hit.place {
+                if let Some(block) = self.inventory.selected_block() {
+                    if block != Block::Air
+                        && self.world.block_at_world(px, py, pz) == Block::Air
+                        && !self.player.overlaps_block(px, py, pz)
+                    {
+                        changed |= self.world.set_block_at_world(px, py, pz, block);
+                    }
+                }
+            }
+        }
+
+        if changed {
+            self.world.save_if_dirty();
+        }
+    }
+
+    fn raycast_block_target(&self, max_dist: f32) -> Option<BlockRayHit> {
+        let origin = self.camera.pos;
+        let dir = self.camera.forward();
+        let step = 0.05f32;
+        let mut t = 0.0f32;
+        let mut last_air: Option<(i32, i32, i32)> = None;
+        let mut prev_cell: Option<(i32, i32, i32)> = None;
+
+        while t <= max_dist {
+            let p = origin + dir * t;
+            let cell = (
+                p.x.floor() as i32,
+                p.y.floor() as i32,
+                p.z.floor() as i32,
+            );
+
+            if prev_cell == Some(cell) {
+                t += step;
+                continue;
+            }
+            prev_cell = Some(cell);
+
+            let b = self.world.block_at_world(cell.0, cell.1, cell.2);
+            if b.is_solid() {
+                return Some(BlockRayHit {
+                    block: cell,
+                    place: last_air,
+                });
+            }
+            last_air = Some(cell);
+            t += step;
+        }
+        None
+    }
+
     fn process_api_commands(&mut self) {
         while let Some(cmd) = self.mod_api_runtime.try_recv() {
             match cmd {
@@ -454,7 +586,9 @@ impl Engine {
                     self.renderer.set_ray_tracing_enabled(enabled);
                 }
                 ApiCommand::SetBlock { x, y, z, block } => {
-                    let _ = self.world.set_block_at_world(x, y, z, block);
+                    if self.world.set_block_at_world(x, y, z, block) {
+                        self.world.save_if_dirty();
+                    }
                 }
                 ApiCommand::QueryBlock { x, y, z, respond_to } => {
                     let _ = respond_to.send(self.world.block_at_world(x, y, z));
@@ -566,6 +700,12 @@ impl Engine {
     }
 }
 
+#[derive(Clone, Copy)]
+struct BlockRayHit {
+    block: (i32, i32, i32),
+    place: Option<(i32, i32, i32)>,
+}
+
 struct DebugOverlayData {
     left: Vec<String>,
     right: Vec<String>,
@@ -648,4 +788,34 @@ fn next_seed(seed: u32) -> u32 {
 
 fn wrap_day_time(t: f32) -> f32 {
     t.rem_euclid(1.0)
+}
+
+fn digit_key_to_hotbar_slot(key: KeyCode) -> Option<usize> {
+    match key {
+        KeyCode::Digit1 => Some(0),
+        KeyCode::Digit2 => Some(1),
+        KeyCode::Digit3 => Some(2),
+        KeyCode::Digit4 => Some(3),
+        KeyCode::Digit5 => Some(4),
+        KeyCode::Digit6 => Some(5),
+        KeyCode::Digit7 => Some(6),
+        KeyCode::Digit8 => Some(7),
+        KeyCode::Digit9 => Some(8),
+        _ => None,
+    }
+}
+
+fn settings_changed(a: &Settings, b: &Settings) -> bool {
+    if a.render_dist != b.render_dist
+        || a.vsync != b.vsync
+        || a.show_fps != b.show_fps
+    {
+        return true;
+    }
+    (a.fly_speed - b.fly_speed).abs() > 0.0001
+        || (a.mouse_sens - b.mouse_sens).abs() > 0.0001
+        || (a.ambient_boost - b.ambient_boost).abs() > 0.0001
+        || (a.sun_softness - b.sun_softness).abs() > 0.0001
+        || (a.fog_density - b.fog_density).abs() > 0.0001
+        || (a.exposure - b.exposure).abs() > 0.0001
 }

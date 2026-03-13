@@ -592,7 +592,7 @@ fn create_block_textures(
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
 ) -> BlockTextures {
-    const TEX_NAMES: [&str; 10] = [
+    const TEX_NAMES: [&str; 13] = [
         "air",
         "grass",
         "dirt",
@@ -603,6 +603,9 @@ fn create_block_textures(
         "log",
         "logBottom",
         "leaves",
+        "coal_ore",
+        "iron_ore",
+        "copper_ore",
     ];
 
     let mut layers: Vec<RgbaImage> = Vec::with_capacity(TEX_NAMES.len());
@@ -771,6 +774,9 @@ fn fallback_block_texture(name: &str) -> RgbaImage {
         "log" => [115, 77, 46, 255],
         "logBottom" => [145, 112, 72, 255],
         "leaves" => [46, 140, 56, 255],
+        "coal_ore" => [84, 84, 84, 255],
+        "iron_ore" => [184, 135, 98, 255],
+        "copper_ore" => [168, 100, 66, 255],
         _ => [255, 0, 255, 255],
     };
     RgbaImage::from_pixel(16, 16, Rgba(color))

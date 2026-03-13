@@ -565,6 +565,8 @@ impl Chunk {
                     .max((surface_ctx[ex][ez + 1] as i32 - surface_ctx[ex][ez - 1] as i32).abs());
                 let wx = (cx * CHUNK_W as i32 + x as i32) as f64;
                 let wz = (cz * CHUNK_D as i32 + z as i32) as f64;
+                let wx_i = wx as i32;
+                let wz_i = wz as i32;
                 let hseed = hash2(seed, wx as i32, wz as i32);
                 let around_biomes = [
                     biome_ctx[ex - 1][ez],
@@ -617,10 +619,10 @@ impl Chunk {
                             let n0 = cave_a.get([wx / 26.0, y as f64 / 22.0, wz / 26.0]);
                             let n1 = cave_b.get([wx / 14.0, y as f64 / 14.0, wz / 14.0]).abs();
                             if !(n0 > cave_thr && n1 > 0.33) {
-                                blocks[idx(x, y, z)] = Block::Stone;
+                                blocks[idx(x, y, z)] = pick_stone_block(seed, wx_i, y as i32, wz_i, b);
                             }
                         } else {
-                            blocks[idx(x, y, z)] = Block::Stone;
+                            blocks[idx(x, y, z)] = pick_stone_block(seed, wx_i, y as i32, wz_i, b);
                         }
                     }
                 }
@@ -642,6 +644,7 @@ impl Chunk {
             }
         }
         place_trees(&mut blocks, cx, cz, seed, &hmap);
+        place_surface_features(&mut blocks, cx, cz, seed, &hmap);
         Self {
             cx,
             cz,
@@ -888,9 +891,91 @@ fn place_trees(blocks: &mut [Block], cx: i32, cz: i32, seed: u32, hmap: &Heightm
     }
 }
 
+fn place_surface_features(blocks: &mut [Block], cx: i32, cz: i32, seed: u32, hmap: &Heightmap) {
+    let world_x0 = cx * CHUNK_W as i32;
+    let world_z0 = cz * CHUNK_D as i32;
+
+    for x in 1..(CHUNK_W - 1) {
+        let wx = world_x0 + x as i32;
+        for z in 1..(CHUNK_D - 1) {
+            let wz = world_z0 + z as i32;
+            let biome_here = hmap.biome[x][z];
+            if biome::is_ocean(biome_here) {
+                continue;
+            }
+
+            let surface = hmap.surface[x][z] as usize;
+            if surface + 2 >= CHUNK_H {
+                continue;
+            }
+            let top = blocks[idx(x, surface, z)];
+            let above_i = idx(x, surface + 1, z);
+            if blocks[above_i] != Block::Air {
+                continue;
+            }
+
+            let h = hash3(seed ^ 0x6E62_7A11, wx, surface as i32, wz);
+            let r = (h & 0xffff) as f32 / 65535.0;
+
+            // Sparse low bushes on grassy terrain.
+            if matches!(top, Block::Grass | Block::Dirt) && r < 0.020 {
+                blocks[above_i] = Block::Leaves;
+                if surface + 2 < CHUNK_H && ((h >> 16) & 0b11) == 0 {
+                    blocks[idx(x, surface + 2, z)] = Block::Leaves;
+                }
+                continue;
+            }
+
+            // Tiny rocky outcrops in dry biomes.
+            if top == Block::Sand && r < 0.012 {
+                blocks[above_i] = Block::Stone;
+                if surface + 2 < CHUNK_H && ((h >> 20) & 1) == 1 {
+                    blocks[idx(x, surface + 2, z)] = Block::Stone;
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn pick_stone_block(seed: u32, wx: i32, wy: i32, wz: i32, biome: Biome) -> Block {
+    if wy < 1 {
+        return Block::Stone;
+    }
+
+    let h = hash3(seed ^ 0xB529_7A4D, wx, wy, wz);
+    let r = (h as f64) / (u32::MAX as f64);
+
+    let mountain_bonus = if biome::is_mountain(biome) { 1.20 } else { 1.0 };
+
+    if wy <= 26 && r < 0.016 * mountain_bonus {
+        return Block::IronOre;
+    }
+    if wy <= 46 && r < 0.020 {
+        return Block::CopperOre;
+    }
+    if wy <= 84 && r < 0.030 * mountain_bonus {
+        return Block::CoalOre;
+    }
+
+    Block::Stone
+}
+
 fn hash2(seed: u32, x: i32, z: i32) -> u32 {
     let mut h = seed ^ (x as u32).wrapping_mul(374761393) ^ (z as u32).wrapping_mul(668265263);
     h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+    h ^ (h >> 16)
+}
+
+fn hash3(seed: u32, x: i32, y: i32, z: i32) -> u32 {
+    let mut h = seed
+        ^ (x as u32).wrapping_mul(0x9E37_79B9)
+        ^ (y as u32).wrapping_mul(0x85EB_CA6B)
+        ^ (z as u32).wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7FEB_352D);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846C_A68B);
     h ^ (h >> 16)
 }
 

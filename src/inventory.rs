@@ -59,6 +59,28 @@ impl Inventory {
         self.open = !self.open;
     }
 
+    pub fn selected_block(&self) -> Option<Block> {
+        let slot = self.hotbar[self.selected];
+        if slot.is_empty() {
+            None
+        } else {
+            Some(slot.block)
+        }
+    }
+
+    pub fn select_hotbar_slot(&mut self, index: usize) {
+        self.selected = index.min(self.hotbar.len().saturating_sub(1));
+    }
+
+    pub fn cycle_hotbar(&mut self, delta: i32) {
+        let len = self.hotbar.len() as i32;
+        if len <= 0 {
+            return;
+        }
+        let next = (self.selected as i32 + delta).rem_euclid(len) as usize;
+        self.selected = next;
+    }
+
     pub fn draw_hotbar(&mut self, ctx: &egui::Context) {
         let screen = ctx.screen_rect();
         let slot_size = 28.0;
@@ -88,7 +110,7 @@ impl Inventory {
                         for i in 0..9 {
                             let resp = paint_slot(ui, &self.hotbar[i], i == self.selected, slot_size);
                             if resp.clicked() {
-                                self.selected = i;
+                                self.select_hotbar_slot(i);
                             }
                         }
                     });
@@ -146,7 +168,7 @@ impl Inventory {
                         for i in 0..9 {
                             let resp = paint_slot(ui, &self.hotbar[i], i == self.selected, slot_size);
                             if resp.clicked() {
-                                self.selected = i;
+                                self.select_hotbar_slot(i);
                             }
                         }
                     });
@@ -202,5 +224,8 @@ fn block_color(block: Block) -> Color32 {
         Block::Log => Color32::from_rgb(115, 77, 46),
         Block::LogBottom => Color32::from_rgb(145, 112, 72),
         Block::Leaves => Color32::from_rgb(46, 140, 56),
+        Block::CoalOre => Color32::from_rgb(84, 84, 84),
+        Block::IronOre => Color32::from_rgb(184, 135, 98),
+        Block::CopperOre => Color32::from_rgb(168, 100, 66),
     }
 }

@@ -69,6 +69,9 @@ fn block_color(id: u32) -> vec3<f32> {
         case 7u: { return vec3<f32>(0.52, 0.36, 0.22); } // log
         case 8u: { return vec3<f32>(0.62, 0.47, 0.30); } // logBottom
         case 9u: { return vec3<f32>(0.34, 0.58, 0.30); } // leaves
+        case 10u: { return vec3<f32>(0.38, 0.38, 0.40); } // coal_ore
+        case 11u: { return vec3<f32>(0.74, 0.53, 0.38); } // iron_ore
+        case 12u: { return vec3<f32>(0.72, 0.44, 0.28); } // copper_ore
         default: { return vec3<f32>(1.0, 0.0, 1.0); }
     }
 }

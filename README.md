@@ -184,6 +184,3 @@ A clean, optimized, and secure sandbox engine that could eventually power a Mine
 
 ---
 
-## License
-
-TBD

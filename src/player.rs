@@ -14,6 +14,13 @@ pub struct Player {
     ground_accel: f32,
     air_accel: f32,
     ground_friction: f32,
+    max_fall_speed: f32,
+    step_height: f32,
+    ground_snap_dist: f32,
+    coyote_time: f32,
+    jump_buffer_time: f32,
+    coyote_timer: f32,
+    jump_buffer_timer: f32,
 }
 
 impl Player {
@@ -30,11 +37,24 @@ impl Player {
             ground_accel: 55.0,
             air_accel: 18.0,
             ground_friction: 24.0,
+            max_fall_speed: 54.0,
+            step_height: 0.55,
+            ground_snap_dist: 0.22,
+            coyote_time: 0.09,
+            jump_buffer_time: 0.10,
+            coyote_timer: 0.0,
+            jump_buffer_timer: 0.0,
         }
     }
 
     pub fn eye_pos(&self) -> Vec3 {
         self.pos + Vec3::Y * self.eye_height
+    }
+
+    pub fn teleport(&mut self, pos: Vec3) {
+        self.pos = pos;
+        self.vel = Vec3::ZERO;
+        self.on_ground = false;
     }
 
     pub fn simulate(
@@ -47,48 +67,36 @@ impl Player {
         world: &World,
     ) {
         let yaw = yaw_deg.to_radians();
-        let forward = Vec3::new(yaw.cos(), 0.0, yaw.sin()).normalize_or_zero();
-        let right = forward.cross(Vec3::Y).normalize_or_zero();
+        let forward = Vec2::new(yaw.cos(), yaw.sin()).normalize_or_zero();
+        let right = Vec2::new(-forward.y, forward.x);
 
         let mut wish = forward * input.y + right * input.x;
         if wish.length_squared() > 1.0 {
             wish = wish.normalize();
         }
 
-        let mut vel_h = Vec2::new(self.vel.x, self.vel.z);
-        let target_h = Vec2::new(wish.x, wish.z) * walk_speed;
-        let accel = if self.on_ground { self.ground_accel } else { self.air_accel };
-        let max_step = accel * dt;
-
-        let to_target = target_h - vel_h;
-        let delta_len = to_target.length();
-        if delta_len > max_step && delta_len > 0.0 {
-            vel_h += to_target / delta_len * max_step;
+        if jump_pressed {
+            self.jump_buffer_timer = self.jump_buffer_time;
         } else {
-            vel_h = target_h;
+            self.jump_buffer_timer = (self.jump_buffer_timer - dt).max(0.0);
         }
 
-        if self.on_ground && target_h.length_squared() < 1e-4 {
-            let speed = vel_h.length();
-            if speed > 0.0 {
-                let drop = self.ground_friction * dt;
-                let new_speed = (speed - drop).max(0.0);
-                vel_h *= new_speed / speed;
-            }
+        if self.on_ground {
+            self.coyote_timer = self.coyote_time;
+        } else {
+            self.coyote_timer = (self.coyote_timer - dt).max(0.0);
         }
 
-        if vel_h.length_squared() > walk_speed * walk_speed {
-            vel_h = vel_h.normalize() * walk_speed;
-        }
-        self.vel.x = vel_h.x;
-        self.vel.z = vel_h.y;
+        self.apply_horizontal_control(wish, walk_speed, dt);
 
-        if jump_pressed && self.on_ground {
+        if self.jump_buffer_timer > 0.0 && self.coyote_timer > 0.0 {
             self.vel.y = self.jump_speed;
             self.on_ground = false;
+            self.coyote_timer = 0.0;
+            self.jump_buffer_timer = 0.0;
         }
 
-        self.vel.y -= self.gravity * dt;
+        self.vel.y = (self.vel.y - self.gravity * dt).max(-self.max_fall_speed);
 
         self.move_axis(0, self.vel.x * dt, world);
         self.move_axis(2, self.vel.z * dt, world);
@@ -100,6 +108,10 @@ impl Player {
                 self.on_ground = true;
             }
             self.vel.y = 0.0;
+        }
+
+        if !self.on_ground && self.vel.y <= 0.0 {
+            self.try_snap_to_ground(world);
         }
 
         // Failsafe in case we fall below loaded terrain.
@@ -124,6 +136,11 @@ impl Player {
             return false;
         }
 
+        if let Some(step_pos) = self.try_step_move(axis, delta, world) {
+            self.pos = step_pos;
+            return false;
+        }
+
         // Binary search to stop right before collision.
         let mut lo = 0.0;
         let mut hi = 1.0;
@@ -144,7 +161,107 @@ impl Player {
         true
     }
 
+    fn apply_horizontal_control(&mut self, wish: Vec2, walk_speed: f32, dt: f32) {
+        let mut vel_h = Vec2::new(self.vel.x, self.vel.z);
+        let has_input = wish.length_squared() > 1e-5;
+
+        if has_input {
+            let target_h = wish * walk_speed;
+            let accel = if self.on_ground { self.ground_accel } else { self.air_accel };
+            vel_h = move_towards_vec2(vel_h, target_h, accel * dt);
+        } else if self.on_ground {
+            let speed = vel_h.length();
+            if speed > 0.0 {
+                let drop = self.ground_friction * dt;
+                let new_speed = (speed - drop).max(0.0);
+                vel_h *= new_speed / speed;
+            }
+        }
+
+        let max_h_speed = if self.on_ground { walk_speed } else { walk_speed * 1.15 };
+        let max_h_speed_sq = max_h_speed * max_h_speed;
+        if vel_h.length_squared() > max_h_speed_sq {
+            vel_h = vel_h.normalize() * max_h_speed;
+        }
+
+        self.vel.x = vel_h.x;
+        self.vel.z = vel_h.y;
+    }
+
+    fn try_step_move(&self, axis: usize, delta: f32, world: &World) -> Option<Vec3> {
+        if axis == 1 || !self.on_ground {
+            return None;
+        }
+
+        let start = self.pos;
+        let mut elevated = start;
+        elevated.y += self.step_height;
+        if self.intersects_world(elevated, world) {
+            return None;
+        }
+
+        let elevated_axis = get_axis(elevated, axis);
+        set_axis(&mut elevated, axis, elevated_axis + delta);
+        if self.intersects_world(elevated, world) {
+            return None;
+        }
+
+        let mut below = elevated;
+        below.y -= self.step_height + 0.01;
+        if !self.intersects_world(below, world) {
+            return None;
+        }
+
+        let mut lo = 0.0;
+        let mut hi = self.step_height;
+        for _ in 0..10 {
+            let mid = (lo + hi) * 0.5;
+            let mut probe = elevated;
+            probe.y -= mid;
+            if self.intersects_world(probe, world) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+
+        let mut resolved = elevated;
+        resolved.y -= lo;
+        Some(resolved)
+    }
+
+    fn try_snap_to_ground(&mut self, world: &World) {
+        let start = self.pos;
+        let mut down = start;
+        down.y -= self.ground_snap_dist;
+
+        if !self.intersects_world(down, world) {
+            return;
+        }
+
+        let mut lo = 0.0;
+        let mut hi = self.ground_snap_dist;
+        for _ in 0..10 {
+            let mid = (lo + hi) * 0.5;
+            let mut probe = start;
+            probe.y -= mid;
+            if self.intersects_world(probe, world) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+
+        self.pos.y = start.y - lo;
+        self.vel.y = 0.0;
+        self.on_ground = true;
+    }
+
     fn intersects_world(&self, pos: Vec3, world: &World) -> bool {
+        if pos.y < 0.0 {
+            return true;
+        }
+
         let eps = 0.001;
         let min = Vec3::new(pos.x - self.radius, pos.y, pos.z - self.radius);
         let max = Vec3::new(pos.x + self.radius, pos.y + self.height, pos.z + self.radius);
@@ -182,5 +299,15 @@ fn set_axis(v: &mut Vec3, axis: usize, value: f32) {
         0 => v.x = value,
         1 => v.y = value,
         _ => v.z = value,
+    }
+}
+
+fn move_towards_vec2(current: Vec2, target: Vec2, max_delta: f32) -> Vec2 {
+    let delta = target - current;
+    let len = delta.length();
+    if len <= max_delta || len <= f32::EPSILON {
+        target
+    } else {
+        current + delta / len * max_delta
     }
 }

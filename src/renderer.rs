@@ -9,8 +9,9 @@ use winit::window::Window;
 use crate::args::Args;
 use crate::camera::Camera;
 use crate::culling::{Frustum, cull_chunks_parallel};
+use crate::raytracing::RayTracingRenderer;
 use crate::world::chunk::Vertex;
-use crate::world::world::ChunkMesh;
+use crate::world::world::{ChunkMesh, World};
 
 pub struct EguiRenderer {
     pub ctx:      egui::Context,
@@ -26,7 +27,7 @@ impl EguiRenderer {
     ) -> Self {
         let ctx   = egui::Context::default();
 
-        // Тёмная тема
+        // Ð¢Ñ‘Ð¼Ð½Ð°Ñ Ñ‚ÐµÐ¼Ð°
         ctx.set_visuals(egui::Visuals {
             window_rounding: egui::Rounding::same(12.0),
             ..egui::Visuals::dark()
@@ -82,7 +83,7 @@ impl EguiRenderer {
                 view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Load, // поверх игры
+                    load:  wgpu::LoadOp::Load, // Ð¿Ð¾Ð²ÐµÑ€Ñ… Ð¸Ð³Ñ€Ñ‹
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -103,6 +104,8 @@ impl EguiRenderer {
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     time_of_day: [f32; 4],
+    lighting: [f32; 4],  // x=ambient_boost, y=sun_softness, z=fog_density, w=exposure
+    rt_params: [f32; 4], // x=enabled, y=max_steps, z=max_dist, w=step_len
 }
 
 struct ChunkBuffer {
@@ -129,12 +132,20 @@ pub struct Renderer {
     cam_bind_group: wgpu::BindGroup,
     block_textures: BlockTextures,
     day_time:       f32,
+    lighting:       [f32; 4],
+    rt_params:      [f32; 4],
+    ray_tracing_enabled: bool,
+    ray_tracer:     Option<RayTracingRenderer>,
+    ray_tracing_supported: bool,
 
-    // per-chunk буферы
+    // per-chunk Ð±ÑƒÑ„ÐµÑ€Ñ‹
     chunk_buffers:  HashMap<(i32,i32), ChunkBuffer>,
+    chunk_keys:     Vec<(i32, i32)>,
     cull_pool:      rayon::ThreadPool,
     visible_keys:   Vec<(i32,i32)>,
     pub egui:       EguiRenderer,
+    gpu_name:       String,
+    graphics_api:   String,
 }
 
 impl Renderer {
@@ -152,11 +163,27 @@ impl Renderer {
             ..Default::default()
         }).await.expect("adapter");
 
-        log::info!("GPU: {}", adapter.get_info().name);
+        let adapter_info = adapter.get_info();
+        log::info!("GPU: {}", adapter_info.name);
+
+        let ray_tracing_supported = RayTracingRenderer::is_supported(&adapter);
+        if ray_tracing_supported {
+            log::info!("Ray tracing: supported (optional)");
+        } else {
+            log::warn!(
+                "Ray tracing: unavailable on this GPU/backend (game will run without RT)"
+            );
+        }
+
+        let required_features = if ray_tracing_supported {
+            RayTracingRenderer::required_features()
+        } else {
+            wgpu::Features::empty()
+        };
 
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("device"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits:   wgpu::Limits::default(),
         }, None).await.expect("device");
 
@@ -168,7 +195,7 @@ impl Renderer {
             format,
             width:        size.width.max(1),
             height:       size.height.max(1),
-            present_mode: wgpu::PresentMode::AutoNoVsync, // убираем VSync — реальный FPS
+            present_mode: wgpu::PresentMode::AutoNoVsync, // ÑƒÐ±Ð¸Ñ€Ð°ÐµÐ¼ VSync â€” Ñ€ÐµÐ°Ð»ÑŒÐ½Ñ‹Ð¹ FPS
             alpha_mode:   caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -265,6 +292,7 @@ impl Renderer {
         });
 
         let egui = EguiRenderer::new(&device, format, &window);
+        let ray_tracer = None;
 
         let cull_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(args.cull_threads())
@@ -277,18 +305,27 @@ impl Renderer {
             pipeline, depth_texture,
             cam_buffer, cam_bind_group, block_textures,
             day_time: 0.25,
+            lighting: [1.02, 0.34, 1.0, 1.00],
+            rt_params: [0.0, 96.0, 96.0, 0.9],
+            ray_tracing_enabled: false,
+            ray_tracer,
+            ray_tracing_supported,
             chunk_buffers: HashMap::new(),
+            chunk_keys: Vec::new(),
             cull_pool,
             visible_keys: Vec::new(),
             egui,
+            gpu_name: adapter_info.name,
+            graphics_api: format!("{:?}", adapter_info.backend),
         }
     }
 
-    // ── Обновить конкретные чанки ─────────────────────────────
+    // â”€â”€ ÐžÐ±Ð½Ð¾Ð²Ð¸Ñ‚ÑŒ ÐºÐ¾Ð½ÐºÑ€ÐµÑ‚Ð½Ñ‹Ðµ Ñ‡Ð°Ð½ÐºÐ¸ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pub fn update_chunks(&mut self, meshes: Vec<((i32,i32), ChunkMesh)>) {
+        let mut dirty_keys = false;
         for (key, mesh) in meshes {
             if mesh.verts.is_empty() {
-                self.chunk_buffers.remove(&key);
+                dirty_keys |= self.chunk_buffers.remove(&key).is_some();
                 continue;
             }
             let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -300,16 +337,27 @@ impl Renderer {
                 buf,
                 count: mesh.verts.len() as u32,
             });
+            dirty_keys = true;
+        }
+        if dirty_keys {
+            self.chunk_keys = self.chunk_buffers.keys().copied().collect();
         }
     }
 
-    // ── Удалить буферы выгруженных чанков ─────────────────────
+    // â”€â”€ Ð£Ð´Ð°Ð»Ð¸Ñ‚ÑŒ Ð±ÑƒÑ„ÐµÑ€Ñ‹ Ð²Ñ‹Ð³Ñ€ÑƒÐ¶ÐµÐ½Ð½Ñ‹Ñ… Ñ‡Ð°Ð½ÐºÐ¾Ð² â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pub fn remove_chunks(&mut self, keys: &[(i32,i32)]) {
-        for key in keys { self.chunk_buffers.remove(key); }
+        let mut dirty_keys = false;
+        for key in keys {
+            dirty_keys |= self.chunk_buffers.remove(key).is_some();
+        }
+        if dirty_keys {
+            self.chunk_keys = self.chunk_buffers.keys().copied().collect();
+        }
     }
 
     pub fn clear_chunks(&mut self) {
         self.chunk_buffers.clear();
+        self.chunk_keys.clear();
         self.visible_keys.clear();
     }
 
@@ -318,17 +366,41 @@ impl Renderer {
         let u = CameraUniform {
             view_proj: cam.view_proj(self.config.width, self.config.height).to_cols_array_2d(),
             time_of_day: [day_time, 0.0, 0.0, 0.0],
+            lighting: self.lighting,
+            rt_params: self.rt_params,
         };
         self.queue.write_buffer(&self.cam_buffer, 0, bytemuck::bytes_of(&u));
     }
 
-    /// Обновить список видимых чанков (вызывать раз в кадр до render)
+    #[allow(dead_code)]
+    pub fn set_ray_tracing_stub_enabled(&mut self, enabled: bool) {
+        self.rt_params[0] = if enabled { 1.0 } else { 0.0 };
+    }
+
+    pub fn update_ray_tracing(&mut self, cam: &Camera, world: &World, day_time: f32) {
+        if !self.ray_tracing_enabled {
+            return;
+        }
+        let Some(ray_tracer) = self.ray_tracer.as_mut() else {
+            return;
+        };
+        self.day_time = day_time;
+        ray_tracer.update(
+            &self.queue,
+            cam,
+            self.config.width,
+            self.config.height,
+            day_time,
+            world,
+        );
+    }
+
+    /// ÐžÐ±Ð½Ð¾Ð²Ð¸Ñ‚ÑŒ ÑÐ¿Ð¸ÑÐ¾Ðº Ð²Ð¸Ð´Ð¸Ð¼Ñ‹Ñ… Ñ‡Ð°Ð½ÐºÐ¾Ð² (Ð²Ñ‹Ð·Ñ‹Ð²Ð°Ñ‚ÑŒ Ñ€Ð°Ð· Ð² ÐºÐ°Ð´Ñ€ Ð´Ð¾ render)
     pub fn update_visibility(&mut self, cam: &Camera) {
         let vp = cam.view_proj(self.config.width, self.config.height);
         let frustum = Frustum::from_view_proj(&vp);
-        let keys: Vec<_> = self.chunk_buffers.keys().copied().collect();
         self.visible_keys = cull_chunks_parallel(
-            &keys, &frustum, cam.pos, &self.cull_pool
+            &self.chunk_keys, &frustum, cam.pos, &self.cull_pool
         );
     }
 
@@ -339,11 +411,29 @@ impl Renderer {
             &wgpu::CommandEncoderDescriptor { label: Some("frame") }
         );
 
-        {
+        if self.ray_tracing_enabled && self.ray_tracer.is_some() {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rt_main"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(sky_color_from_time(self.day_time)),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            if let Some(ray_tracer) = self.ray_tracer.as_ref() {
+                ray_tracer.draw(&mut pass);
+            }
+        } else {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, resolve_target: None,
+                    view: &view,
+                    resolve_target: None,
                     ops: wgpu::Operations {
                         load:  wgpu::LoadOp::Clear(sky_color_from_time(self.day_time)),
                         store: wgpu::StoreOp::Store,
@@ -352,7 +442,8 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_texture,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store,
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
@@ -363,7 +454,6 @@ impl Renderer {
             pass.set_bind_group(0, &self.cam_bind_group, &[]);
             pass.set_bind_group(1, &self.block_textures.bind_group, &[]);
 
-            // Используем предпосчитанный список видимых чанков
             for &key in &self.visible_keys {
                 if let Some(cb) = self.chunk_buffers.get(&key) {
                     pass.set_vertex_buffer(0, cb.buf.slice(..));
@@ -372,17 +462,20 @@ impl Renderer {
             }
         }
 
-        // Рисуем egui поверх игры
         let window = Arc::clone(&self.window);
         self.egui.draw(
-            &self.device, &self.queue, &mut enc, &view, &window, run_ui,
+            &self.device,
+            &self.queue,
+            &mut enc,
+            &view,
+            &window,
+            run_ui,
         );
 
         self.queue.submit(std::iter::once(enc.finish()));
         output.present();
         Ok(())
     }
-
     pub fn resize(&mut self, w: u32, h: u32) {
         if w == 0 || h == 0 { return; }
         self.config.width  = w;
@@ -395,11 +488,64 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
+    pub fn set_vsync_enabled(&mut self, enabled: bool) {
+        self.config.present_mode = if enabled {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        self.reconfigure();
+    }
+
+    pub fn set_lighting_params(
+        &mut self,
+        ambient_boost: f32,
+        sun_softness: f32,
+        fog_density: f32,
+        exposure: f32,
+    ) {
+        self.lighting = [
+            ambient_boost.clamp(0.5, 2.0),
+            sun_softness.clamp(0.0, 1.0),
+            fog_density.clamp(0.1, 3.0),
+            exposure.clamp(0.5, 2.5),
+        ];
+    }
+
     pub fn window_arc(&self) -> Arc<Window> {
         Arc::clone(&self.window)
     }
 
     pub fn window(&self) -> &Window { &self.window }
+    pub fn gpu_name(&self) -> &str { &self.gpu_name }
+    pub fn graphics_api(&self) -> &str { &self.graphics_api }
+    pub fn set_ray_tracing_enabled(&mut self, enabled: bool) {
+        if enabled {
+            if !self.ray_tracing_supported {
+                log::warn!("Ray tracing requested but unsupported on current GPU/backend");
+                self.ray_tracing_enabled = false;
+                self.rt_params[0] = 0.0;
+                return;
+            }
+
+            if self.ray_tracer.is_none() {
+                self.ray_tracer = Some(RayTracingRenderer::new(&self.device, self.config.format));
+            }
+            self.ray_tracing_enabled = self.ray_tracer.is_some();
+            self.rt_params[0] = if self.ray_tracing_enabled { 1.0 } else { 0.0 };
+            return;
+        }
+
+        self.ray_tracing_enabled = false;
+        self.rt_params[0] = 0.0;
+    }
+    pub fn ray_tracing_enabled(&self) -> bool {
+        self.ray_tracing_enabled
+    }
+    #[allow(dead_code)]
+    pub fn ray_tracing_supported(&self) -> bool {
+        self.ray_tracing_supported
+    }
     #[allow(dead_code)]
     pub fn chunk_count(&self) -> usize { self.chunk_buffers.len() }
 }
@@ -407,17 +553,19 @@ impl Renderer {
 fn sky_color_from_time(t: f32) -> wgpu::Color {
     let angle = t * std::f32::consts::TAU;
     let sun_y = angle.sin();
-    let day = smoothstep(-0.05, 0.15, sun_y);
-    let night = 1.0 - day;
+    let day = smoothstep(-0.08, 0.14, sun_y);
+    let twilight = 1.0 - smoothstep(0.02, 0.42, sun_y.abs());
 
-    let day_sky = [0.53, 0.81, 0.98];
-    let night_sky = [0.02, 0.03, 0.08];
-    let dusk_sky = [0.95, 0.55, 0.25];
-    let dusk = smoothstep(0.25, 0.65, 1.0 - sun_y.abs()) * night;
+    let day_sky = [0.52, 0.77, 0.97];
+    let night_sky = [0.015, 0.025, 0.060];
+    let dusk_sky = [1.00, 0.54, 0.23];
 
-    let r = (day_sky[0] * day + night_sky[0] * night) * (1.0 - dusk) + dusk_sky[0] * dusk;
-    let g = (day_sky[1] * day + night_sky[1] * night) * (1.0 - dusk) + dusk_sky[1] * dusk;
-    let b = (day_sky[2] * day + night_sky[2] * night) * (1.0 - dusk) + dusk_sky[2] * dusk;
+    let mut r = day_sky[0] * day + night_sky[0] * (1.0 - day);
+    let mut g = day_sky[1] * day + night_sky[1] * (1.0 - day);
+    let mut b = day_sky[2] * day + night_sky[2] * (1.0 - day);
+    r = r * (1.0 - twilight * 0.55) + dusk_sky[0] * twilight * 0.55;
+    g = g * (1.0 - twilight * 0.55) + dusk_sky[1] * twilight * 0.55;
+    b = b * (1.0 - twilight * 0.55) + dusk_sky[2] * twilight * 0.55;
 
     wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: 1.0 }
 }
@@ -627,3 +775,4 @@ fn fallback_block_texture(name: &str) -> RgbaImage {
     };
     RgbaImage::from_pixel(16, 16, Rgba(color))
 }
+

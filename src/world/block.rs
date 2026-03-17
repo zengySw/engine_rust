@@ -6,6 +6,8 @@ pub enum Block {
     Workbench,
     Furnace,
     Coal,
+    IronIngot,
+    Torch,
     Wood,
     Stick,
     Grass,
@@ -30,17 +32,40 @@ impl Block {
     }
 
     pub fn is_placeable(&self) -> bool {
-        !matches!(self, Block::Air | Block::CaveAir | Block::Water | Block::Stick | Block::Coal)
+        !matches!(
+            self,
+            Block::Air
+                | Block::CaveAir
+                | Block::Water
+                | Block::Stick
+                | Block::Coal
+                | Block::IronIngot
+        )
     }
 
     pub fn is_solid(&self) -> bool {
-        !matches!(self, Block::Air | Block::CaveAir | Block::Water | Block::Stick | Block::Coal)
+        !matches!(
+            self,
+            Block::Air
+                | Block::CaveAir
+                | Block::Water
+                | Block::Stick
+                | Block::Coal
+                | Block::IronIngot
+                | Block::Torch
+        )
     }
 
     pub fn is_breakable(&self) -> bool {
         !matches!(
             self,
-            Block::Air | Block::CaveAir | Block::Water | Block::Bedrock | Block::Stick | Block::Coal
+            Block::Air
+                | Block::CaveAir
+                | Block::Water
+                | Block::Bedrock
+                | Block::Stick
+                | Block::Coal
+                | Block::IronIngot
         )
     }
 
@@ -63,6 +88,8 @@ impl Block {
             Block::Workbench => "workbench",
             Block::Furnace => "furnace",
             Block::Coal => "coal",
+            Block::IronIngot => "iron_ingot",
+            Block::Torch => "torch",
             Block::Wood => "wood",
             Block::Stick => "stick",
             Block::Grass   => "grass",
@@ -89,6 +116,8 @@ impl Block {
             Block::Workbench => "workbench",
             Block::Furnace => "furnace",
             Block::Coal => "coal",
+            Block::IronIngot => "iron_ingot",
+            Block::Torch => "torch",
             Block::Wood => "wood",
             Block::Stick => "stick",
             Block::Grass => "grass",
@@ -115,6 +144,8 @@ impl Block {
             Block::Workbench => 16,
             Block::Furnace => 21,
             Block::Coal => 24,
+            Block::IronIngot => 26,
+            Block::Torch => 25,
             Block::Wood => 17,
             Block::Stick => 18,
             Block::Grass   => 1,
@@ -141,6 +172,8 @@ impl Block {
             Block::Workbench => 16,
             Block::Furnace => 19,
             Block::Coal => 20,
+            Block::IronIngot => 22,
+            Block::Torch => 21,
             Block::Wood => 17,
             Block::Stick => 18,
             Block::Grass => 1,
@@ -167,6 +200,8 @@ impl Block {
             16 => Some(Block::Workbench),
             19 => Some(Block::Furnace),
             20 => Some(Block::Coal),
+            22 => Some(Block::IronIngot),
+            21 => Some(Block::Torch),
             17 => Some(Block::Wood),
             18 => Some(Block::Stick),
             1 => Some(Block::Grass),

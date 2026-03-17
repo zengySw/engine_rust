@@ -53,8 +53,22 @@ const BG_MUSIC_INTERVAL_MAX: f32 = 140.0;
 const THUNDER_INTERVAL_MIN: f32 = 9.0;
 const THUNDER_INTERVAL_MAX: f32 = 19.0;
 const PLAYER_MAX_HEALTH: f32 = 20.0;
+const PLAYER_MAX_HUNGER: f32 = 20.0;
+const PLAYER_MAX_STAMINA: f32 = 100.0;
 const PLAYER_HURT_IFRAMES: f32 = 0.65;
 const PLAYER_ATTACK_COOLDOWN: f32 = 0.22;
+const PLAYER_SPRINT_MULT: f32 = 1.30;
+const STAMINA_SPRINT_DRAIN: f32 = 26.0;
+const STAMINA_RECOVERY: f32 = 22.0;
+const HUNGER_IDLE_DRAIN: f32 = 0.002;
+const HUNGER_MOVE_DRAIN: f32 = 0.010;
+const HUNGER_SPRINT_DRAIN: f32 = 0.070;
+const HUNGER_REGEN_THRESHOLD: f32 = 12.0;
+const HUNGER_REGEN_INTERVAL: f32 = 2.3;
+const HUNGER_REGEN_COST: f32 = 1.0;
+const STARVATION_INTERVAL: f32 = 3.0;
+const FALL_DAMAGE_FREE: f32 = 3.0;
+const FALL_DAMAGE_PER_BLOCK: f32 = 1.0;
 const MOB_MAX_COUNT: usize = 10;
 const MOB_SPAWN_RANGE_MIN: f32 = 10.0;
 const MOB_SPAWN_RANGE_MAX: f32 = 21.0;
@@ -62,7 +76,10 @@ const MOB_DESPAWN_RANGE: f32 = 52.0;
 const MOB_CHASE_RANGE: f32 = 18.0;
 const MOB_ATTACK_RANGE: f32 = 1.25;
 const MOB_ATTACK_DAMAGE: f32 = 2.0;
-const MOB_HIT_DAMAGE: f32 = 5.0;
+const MOB_HIT_DAMAGE_HAND: f32 = 5.0;
+const MOB_HIT_DAMAGE_WOOD_SWORD: f32 = 8.0;
+const MOB_HIT_DAMAGE_STONE_SWORD: f32 = 10.0;
+const MOB_HIT_DAMAGE_IRON_SWORD: f32 = 12.0;
 const MOB_ATTACK_COOLDOWN: f32 = 1.15;
 const MOB_SPAWN_INTERVAL_MIN: f32 = 4.0;
 const MOB_SPAWN_INTERVAL_MAX: f32 = 8.2;
@@ -121,7 +138,7 @@ pub struct Engine {
     player: Player,
     third_person: bool,
     equipped_tool: Option<WoodenTool>,
-    wood_tool_durability: [u16; 4],
+    wood_tool_durability: [u16; 15],
     rain_active: bool,
     rain_strength: f32,
     surface_wetness: f32,
@@ -153,8 +170,14 @@ pub struct Engine {
     mobs: Vec<MobEntity>,
     mob_spawn_timer: f32,
     player_health: f32,
+    player_hunger: f32,
+    player_stamina: f32,
     player_hurt_timer: f32,
     player_attack_cooldown: f32,
+    health_regen_timer: f32,
+    starvation_timer: f32,
+    fall_peak_y: f32,
+    sprinting: bool,
     cave_mood_percent: f32,
     cave_mood_cooldown: f32,
     cave_mood_surface_hold: f32,
@@ -246,7 +269,7 @@ impl Engine {
             player,
             third_person: false,
             equipped_tool: None,
-            wood_tool_durability: [0; 4],
+            wood_tool_durability: [0; 15],
             rain_active: false,
             rain_strength: 0.0,
             surface_wetness: 0.0,
@@ -269,12 +292,8 @@ impl Engine {
             applied_render_dist: settings.render_dist,
             applied_vsync: settings.vsync,
             applied_ray_tracing: false,
-            applied_lighting: [
-                settings.ambient_boost,
-                settings.sun_softness,
-                settings.fog_density,
-                settings.exposure,
-            ],
+            // Force first runtime apply to push lighting into renderer immediately on startup.
+            applied_lighting: [f32::INFINITY; 4],
             left_mouse_down: false,
             left_mouse_was_down: false,
             place_block_requested: false,
@@ -283,8 +302,14 @@ impl Engine {
             mobs: Vec::new(),
             mob_spawn_timer: 3.5,
             player_health: PLAYER_MAX_HEALTH,
+            player_hunger: PLAYER_MAX_HUNGER,
+            player_stamina: PLAYER_MAX_STAMINA,
             player_hurt_timer: 0.0,
             player_attack_cooldown: 0.0,
+            health_regen_timer: 0.0,
+            starvation_timer: 0.0,
+            fall_peak_y: spawn_y,
+            sprinting: false,
             cave_mood_percent: 0.0,
             cave_mood_cooldown: 0.0,
             cave_mood_surface_hold: 0.0,
@@ -304,7 +329,10 @@ impl Engine {
         engine.renderer.set_ray_tracing_enabled(desired_rt);
         engine.menu.settings.ray_tracing = engine.renderer.ray_tracing_enabled();
         engine.applied_ray_tracing = engine.menu.settings.ray_tracing;
+        engine.load_player_state();
         engine.load_inventory_state();
+        // Apply all loaded settings right now (before first rendered frame).
+        engine.apply_runtime_graphics_settings();
 
         engine.update_api_snapshot();
         (engine, event_loop)
@@ -352,6 +380,7 @@ impl Engine {
                     if !resp.consumed {
                         match we {
                             WindowEvent::CloseRequested => {
+                                self.save_player_state();
                                 self.save_inventory_state();
                                 self.world.save_all();
                                 save::save_settings(&self.menu.settings);
@@ -601,10 +630,20 @@ impl Engine {
                         .map(|tool| item_registry::tool_max_durability(tool))
                         .unwrap_or(1);
                     let show_fps = self.menu.settings.show_fps;
+                    let target_hud = if !self.menu.open && !self.inventory.open {
+                        self.collect_target_hud_info()
+                    } else {
+                        None
+                    };
+                    self.inventory
+                        .set_tool_durability_values(self.wood_tool_durability);
                     let menu = &mut self.menu;
                     let inventory = &mut self.inventory;
                     let fps = fps_display;
                     let player_health = self.player_health;
+                    let player_hunger = self.player_hunger;
+                    let player_stamina = self.player_stamina;
+                    let sprinting = self.sprinting;
                     let cave_mood = self.cave_mood_percent;
                     let mut menu_action = MenuAction::None;
 
@@ -635,6 +674,7 @@ impl Engine {
                                 if let Some(textures) = heart_hud.as_ref() {
                                     draw_health_hud(ctx, textures, player_health);
                                 }
+                                draw_survival_hud(ctx, player_hunger, player_stamina, sprinting);
                                 if let Some(tool_tex) = equipped_tool_hud.as_ref() {
                                     draw_equipped_tool_hud(
                                         ctx,
@@ -644,6 +684,9 @@ impl Engine {
                                     );
                                 }
                                 draw_cave_mood_hud(ctx, cave_mood);
+                                if let Some(target) = target_hud.as_ref() {
+                                    draw_target_hud(ctx, target, heart_hud.as_ref());
+                                }
                             }
                         }
 
@@ -664,6 +707,7 @@ impl Engine {
                             self.regenerate_world(None);
                         }
                         MenuAction::Exit => {
+                            self.save_player_state();
                             self.save_inventory_state();
                             self.world.save_all();
                             save::save_settings(&self.menu.settings);
@@ -688,6 +732,7 @@ impl Engine {
     fn update(&mut self, dt: f32) {
         self.world.update(self.player.pos.x, self.player.pos.z);
         let prev_feet = self.player.pos;
+        let was_on_ground = self.player.on_ground;
 
         let mut input = glam::Vec2::ZERO;
         if self.keys.contains(&KeyCode::KeyD) { input.x += 1.0; }
@@ -709,14 +754,34 @@ impl Engine {
             self.camera.pitch = (self.camera.pitch + look.y * look_speed_deg * dt).clamp(-89.0, 89.0);
         }
 
+        let sprint_key = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+        let has_move_input = input.length_squared() > 0.0001;
+        let wants_sprint = sprint_key && has_move_input && input.y > 0.05;
+        let can_sprint = wants_sprint && self.player_hunger > 0.5 && self.player_stamina > 1.0;
+        let current_walk_speed = if can_sprint {
+            self.walk_speed * PLAYER_SPRINT_MULT
+        } else {
+            self.walk_speed
+        };
+
         self.player.simulate(
             dt,
             input,
             jump_pressed,
             self.camera.yaw,
-            self.walk_speed,
+            current_walk_speed,
             &self.world,
         );
+        let moved = glam::Vec2::new(self.player.pos.x - prev_feet.x, self.player.pos.z - prev_feet.z);
+        let horizontal_speed = if dt > f32::EPSILON {
+            moved.length() / dt
+        } else {
+            0.0
+        };
+        let moving = horizontal_speed > 0.12;
+        self.sprinting = can_sprint && moving && self.player.on_ground;
+        self.update_survival_stats(dt, moving);
+        self.update_fall_damage(was_on_ground);
         self.update_camera_transform();
         self.sync_equipped_tool_from_hotbar();
         self.update_hand_animation(dt, prev_feet);
@@ -742,6 +807,7 @@ impl Engine {
         self.world.save_if_dirty();
         self.inventory_save_timer -= dt;
         if self.inventory_save_timer <= 0.0 {
+            self.save_player_state();
             self.save_inventory_state();
             self.inventory_save_timer = 1.0;
         }
@@ -780,6 +846,7 @@ impl Engine {
     }
 
     fn regenerate_world(&mut self, seed_override: Option<u32>) {
+        self.save_player_state();
         self.save_inventory_state();
         self.world.save_all();
         save::clear_world_file_override(self.world_seed);
@@ -795,7 +862,7 @@ impl Engine {
         self.day_time = 0.25;
         self.jump_was_down = false;
         self.equipped_tool = None;
-        self.wood_tool_durability = [0; 4];
+        self.wood_tool_durability = [0; 15];
         self.footstep_timer = 0.0;
         self.hand_phase_rad = 0.0;
         self.hand_swing = 0.0;
@@ -820,8 +887,14 @@ impl Engine {
         self.mobs.clear();
         self.mob_spawn_timer = 3.5;
         self.player_health = PLAYER_MAX_HEALTH;
+        self.player_hunger = PLAYER_MAX_HUNGER;
+        self.player_stamina = PLAYER_MAX_STAMINA;
         self.player_hurt_timer = 0.0;
         self.player_attack_cooldown = 0.0;
+        self.health_regen_timer = 0.0;
+        self.starvation_timer = 0.0;
+        self.fall_peak_y = self.player.pos.y;
+        self.sprinting = false;
         self.cave_mood_percent = 0.0;
         self.cave_mood_cooldown = 0.0;
         self.cave_mood_surface_hold = 0.0;
@@ -829,6 +902,7 @@ impl Engine {
         self.inventory_save_timer = 0.25;
         self.visibility_cull_timer = 0.0;
         self.rt_update_timer = 0.0;
+        self.load_player_state();
         self.load_inventory_state();
 
         self.menu.open = false;
@@ -899,6 +973,62 @@ impl Engine {
         self.last_saved_settings = self.menu.settings;
     }
 
+    fn save_player_state(&self) {
+        let state = save::PlayerState {
+            pos: [self.player.pos.x, self.player.pos.y, self.player.pos.z],
+            yaw: self.camera.yaw,
+            pitch: self.camera.pitch,
+            day_time: self.day_time,
+            health: self.player_health,
+            hunger: self.player_hunger,
+            stamina: self.player_stamina,
+            rain_active: self.rain_active,
+            rain_strength: self.rain_strength,
+            surface_wetness: self.surface_wetness,
+        };
+        save::save_player_state(self.world_seed, &state);
+    }
+
+    fn load_player_state(&mut self) {
+        let Some(state) = save::load_player_state(self.world_seed) else {
+            return;
+        };
+
+        if state.pos.iter().all(|v| v.is_finite()) {
+            self.player
+                .teleport(glam::Vec3::new(state.pos[0], state.pos[1], state.pos[2]));
+        }
+        if state.yaw.is_finite() {
+            self.camera.yaw = state.yaw;
+        }
+        if state.pitch.is_finite() {
+            self.camera.pitch = state.pitch.clamp(-89.0, 89.0);
+        }
+        if state.day_time.is_finite() {
+            self.day_time = state.day_time.rem_euclid(1.0);
+        }
+        if state.health.is_finite() {
+            self.player_health = state.health.clamp(0.0, PLAYER_MAX_HEALTH);
+        }
+        if state.hunger.is_finite() {
+            self.player_hunger = state.hunger.clamp(0.0, PLAYER_MAX_HUNGER);
+        }
+        if state.stamina.is_finite() {
+            self.player_stamina = state.stamina.clamp(0.0, PLAYER_MAX_STAMINA);
+        }
+        if state.rain_strength.is_finite() {
+            self.rain_strength = state.rain_strength.clamp(0.0, 1.0);
+        }
+        if state.surface_wetness.is_finite() {
+            self.surface_wetness = state.surface_wetness.clamp(0.0, 1.0);
+        }
+        self.rain_active = state.rain_active || self.rain_strength > 0.01;
+        self.fall_peak_y = self.player.pos.y;
+        self.player_hurt_timer = 0.0;
+        self.health_regen_timer = 0.0;
+        self.update_camera_transform();
+    }
+
     fn save_inventory_state(&self) {
         save::save_inventory_state(self.world_seed, &self.inventory, self.wood_tool_durability);
     }
@@ -921,6 +1051,17 @@ impl Engine {
             WoodenTool::Axe,
             WoodenTool::Shovel,
             WoodenTool::Hoe,
+            WoodenTool::Sword,
+            WoodenTool::StonePickaxe,
+            WoodenTool::StoneAxe,
+            WoodenTool::StoneShovel,
+            WoodenTool::StoneHoe,
+            WoodenTool::StoneSword,
+            WoodenTool::IronPickaxe,
+            WoodenTool::IronAxe,
+            WoodenTool::IronShovel,
+            WoodenTool::IronHoe,
+            WoodenTool::IronSword,
         ];
         for tool in all_tools {
             let idx = tool.idx();
@@ -974,11 +1115,12 @@ impl Engine {
         }
 
         // Craft tools at the workbench (workbench itself is only required, not consumed).
-        const TOOL_RECIPES: [(WoodenTool, u16); 4] = [
+        const TOOL_RECIPES: [(WoodenTool, u16); 5] = [
             (WoodenTool::Pickaxe, 3),
             (WoodenTool::Axe, 3),
             (WoodenTool::Shovel, 1),
             (WoodenTool::Hoe, 2),
+            (WoodenTool::Sword, 2),
         ];
 
         for (tool, logs_required) in TOOL_RECIPES {
@@ -1120,12 +1262,18 @@ impl Engine {
                 }
             }
 
-            if self.equipped_tool == Some(WoodenTool::Hoe) {
+            if self.equipped_tool.is_some_and(|tool| tool.is_hoe()) {
                 changed |= self.try_use_hoe(hit.as_ref());
             } else if let Some(hit_data) = hit.as_ref() {
                 if let Some((px, py, pz)) = hit_data.place {
                     if let Some(block) = self.inventory.selected_block() {
+                        let support_ok = if block == Block::Torch {
+                            py > 0 && self.world.block_at_world(px, py - 1, pz).is_solid()
+                        } else {
+                            true
+                        };
                         if !block.is_air()
+                            && support_ok
                             && self.world.block_at_world(px, py, pz).is_air()
                             && !self.player.overlaps_block(px, py, pz)
                         {
@@ -1583,9 +1731,18 @@ impl Engine {
         }
 
         let knock = self.camera.forward();
+        let damage = match self.equipped_tool {
+            Some(WoodenTool::IronSword) => MOB_HIT_DAMAGE_IRON_SWORD,
+            Some(WoodenTool::StoneSword) => MOB_HIT_DAMAGE_STONE_SWORD,
+            Some(tool) if tool.is_sword() => MOB_HIT_DAMAGE_WOOD_SWORD,
+            _ => MOB_HIT_DAMAGE_HAND,
+        };
         if let Some(mob) = self.mobs.get_mut(idx) {
-            mob.hp -= MOB_HIT_DAMAGE;
+            mob.hp -= damage;
             mob.vel += knock * 4.2 + glam::Vec3::Y * 1.6;
+        }
+        if self.equipped_tool.is_some_and(|tool| tool.is_sword()) {
+            self.consume_equipped_tool_durability(1);
         }
         self.player_attack_cooldown = PLAYER_ATTACK_COOLDOWN;
         if let Some(sound) = self.sound_system.as_mut() {
@@ -1752,6 +1909,80 @@ impl Engine {
         (depth_factor * (cave_density * 0.82 + roof_factor * 0.18)).clamp(0.0, 1.0)
     }
 
+    fn update_survival_stats(&mut self, dt: f32, moving: bool) {
+        if dt <= f32::EPSILON {
+            return;
+        }
+
+        let mut hunger_drain = HUNGER_IDLE_DRAIN;
+        if moving {
+            hunger_drain += HUNGER_MOVE_DRAIN;
+        }
+        if self.sprinting {
+            hunger_drain += HUNGER_SPRINT_DRAIN;
+        }
+        self.player_hunger = (self.player_hunger - hunger_drain * dt).clamp(0.0, PLAYER_MAX_HUNGER);
+
+        if self.sprinting {
+            self.player_stamina = (self.player_stamina - STAMINA_SPRINT_DRAIN * dt).max(0.0);
+            if self.player_stamina <= 0.01 {
+                self.sprinting = false;
+            }
+        } else {
+            let mut recovery = STAMINA_RECOVERY;
+            if moving {
+                recovery *= 0.68;
+            }
+            if self.player_hunger <= 0.0 {
+                recovery *= 0.45;
+            }
+            self.player_stamina = (self.player_stamina + recovery * dt).min(PLAYER_MAX_STAMINA);
+        }
+
+        if self.player_health < PLAYER_MAX_HEALTH && self.player_hunger >= HUNGER_REGEN_THRESHOLD {
+            self.health_regen_timer += dt;
+            if self.health_regen_timer >= HUNGER_REGEN_INTERVAL {
+                self.health_regen_timer -= HUNGER_REGEN_INTERVAL;
+                self.player_health = (self.player_health + 1.0).min(PLAYER_MAX_HEALTH);
+                self.player_hunger = (self.player_hunger - HUNGER_REGEN_COST).max(0.0);
+            }
+        } else {
+            self.health_regen_timer = 0.0;
+        }
+
+        if self.player_hunger <= 0.0 {
+            self.starvation_timer += dt;
+            if self.starvation_timer >= STARVATION_INTERVAL {
+                self.starvation_timer -= STARVATION_INTERVAL;
+                if self.player_hurt_timer <= 0.0 {
+                    self.apply_player_damage(1.0);
+                }
+            }
+        } else {
+            self.starvation_timer = 0.0;
+        }
+    }
+
+    fn update_fall_damage(&mut self, was_on_ground: bool) {
+        if self.player.on_ground {
+            if !was_on_ground {
+                let fall_distance = (self.fall_peak_y - self.player.pos.y).max(0.0);
+                let blocks_fallen = fall_distance.floor();
+                let blocks_over_free = blocks_fallen - FALL_DAMAGE_FREE;
+                if blocks_over_free >= 1.0 && self.player_hurt_timer <= 0.0 {
+                    let damage = (blocks_over_free * FALL_DAMAGE_PER_BLOCK).max(1.0);
+                    self.apply_player_damage(damage);
+                }
+            }
+            self.fall_peak_y = self.player.pos.y;
+            return;
+        }
+
+        if self.player.pos.y > self.fall_peak_y {
+            self.fall_peak_y = self.player.pos.y;
+        }
+    }
+
     fn apply_player_damage(&mut self, damage: f32) {
         if damage <= 0.0 {
             return;
@@ -1771,7 +2002,13 @@ impl Engine {
         self.player.teleport(glam::Vec3::new(sx, sy, sz));
         self.update_camera_transform();
         self.player_health = PLAYER_MAX_HEALTH;
+        self.player_hunger = PLAYER_MAX_HUNGER;
+        self.player_stamina = PLAYER_MAX_STAMINA;
         self.player_hurt_timer = 0.75;
+        self.health_regen_timer = 0.0;
+        self.starvation_timer = 0.0;
+        self.fall_peak_y = self.player.pos.y;
+        self.sprinting = false;
         self.cave_mood_surface_hold = 0.0;
         self.left_mouse_down = false;
         self.left_mouse_was_down = false;
@@ -1848,8 +2085,8 @@ impl Engine {
     }
 
     fn collect_hand_visual(&self) -> FirstPersonHandVisual {
-        let holding_tool = self.equipped_tool.is_some();
-        let held_block = if holding_tool {
+        let held_tool = self.equipped_tool;
+        let held_block = if held_tool.is_some() {
             None
         } else {
             self.inventory.selected_block()
@@ -1859,14 +2096,14 @@ impl Engine {
             swing: self.hand_swing,
             action_phase_rad: self.hand_action_phase_rad,
             action_strength: self.hand_action_strength,
-            holding_hoe: holding_tool,
+            held_tool,
             held_block,
         }
     }
 
     fn collect_player_visual(&self) -> PlayerVisual {
-        let holding_tool = self.equipped_tool.is_some();
-        let held_block = if holding_tool {
+        let held_tool = self.equipped_tool;
+        let held_block = if held_tool.is_some() {
             None
         } else {
             self.inventory.selected_block()
@@ -1878,7 +2115,7 @@ impl Engine {
             swing: self.hand_swing,
             action_phase_rad: self.hand_action_phase_rad,
             action_strength: self.hand_action_strength,
-            holding_hoe: holding_tool,
+            held_tool,
             held_block,
         }
     }
@@ -1902,6 +2139,51 @@ impl Engine {
     fn collect_block_outline_visual(&self) -> Option<BlockOutlineVisual> {
         let hit = self.raycast_block_target(BLOCK_BREAK_RANGE)?;
         Some(BlockOutlineVisual { block: hit.block })
+    }
+
+    fn collect_target_hud_info(&self) -> Option<TargetHudInfo> {
+        let block_hit = self.raycast_block_target(BLOCK_BREAK_RANGE);
+        let mob_hit = self.raycast_mob_target(BLOCK_BREAK_RANGE);
+
+        if let Some((mob_idx, mob_dist)) = mob_hit {
+            if let Some(mob) = self.mobs.get(mob_idx) {
+                let mob_center = mob.pos + glam::Vec3::new(0.0, 0.46, 0.0);
+                let los_ok = line_of_sight_clear(
+                    &self.world,
+                    self.camera.pos + glam::Vec3::new(0.0, 0.06, 0.0),
+                    mob_center + glam::Vec3::new(0.0, 0.08, 0.0),
+                );
+                let block_dist = block_hit
+                    .as_ref()
+                    .map(|h| h.distance)
+                    .unwrap_or(f32::INFINITY);
+                if los_ok && mob_dist <= block_dist + 0.02 {
+                    return Some(TargetHudInfo::Mob {
+                        name: "Cave Mob",
+                        hp: mob.hp.max(0.0),
+                    });
+                }
+            }
+        }
+
+        let hit = block_hit?;
+        let block = self.world.block_at_world(hit.block.0, hit.block.1, hit.block.2);
+        if !block.is_breakable() {
+            return None;
+        }
+
+        let progress = self
+            .breaking
+            .as_ref()
+            .filter(|s| s.block == hit.block && s.required > f32::EPSILON)
+            .map(|s| (s.elapsed / s.required).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
+
+        Some(TargetHudInfo::Block {
+            name: block_display_name(block),
+            item_id: item_registry::block_item_id(block),
+            break_progress: progress,
+        })
     }
 
     fn collect_drop_visuals(&self) -> Vec<DroppedBlockVisual> {
@@ -2036,6 +2318,7 @@ impl Engine {
                     block: cell,
                     place: last_air,
                     normal,
+                    distance: t,
                 });
             }
             last_air = Some(cell);
@@ -2210,6 +2493,14 @@ impl Engine {
             ),
             mood_line,
             format!("HP: {:.0}/{}", self.player_health, PLAYER_MAX_HEALTH as i32),
+            format!(
+                "Food: {:.1}/{} | Stamina: {:.0}/{}{}",
+                self.player_hunger,
+                PLAYER_MAX_HUNGER as i32,
+                self.player_stamina,
+                PLAYER_MAX_STAMINA as i32,
+                if self.sprinting { " (sprinting)" } else { "" }
+            ),
             tool_line,
             held_item_line,
             format!("Rotation: {:.1} / {:.1}", self.camera.yaw, self.camera.pitch),
@@ -2326,11 +2617,24 @@ struct BlockRayHit {
     block: (i32, i32, i32),
     place: Option<(i32, i32, i32)>,
     normal: (i32, i32, i32),
+    distance: f32,
 }
 
 struct DebugOverlayData {
     left: Vec<String>,
     right: Vec<String>,
+}
+
+enum TargetHudInfo {
+    Block {
+        name: &'static str,
+        item_id: u16,
+        break_progress: f32,
+    },
+    Mob {
+        name: &'static str,
+        hp: f32,
+    },
 }
 
 fn draw_health_hud(ctx: &egui::Context, textures: &HeartHudTextures, health: f32) {
@@ -2371,6 +2675,88 @@ fn draw_health_hud(ctx: &egui::Context, textures: &HeartHudTextures, health: f32
         } else if heart_hp >= 1.0 {
             painter.image(textures.half.id(), rect, uv, egui::Color32::WHITE);
         }
+    }
+}
+
+fn draw_survival_hud(ctx: &egui::Context, hunger: f32, stamina: f32, sprinting: bool) {
+    let screen = ctx.screen_rect();
+    let slot_size = 28.0;
+    let slot_spacing = 4.0;
+    let hotbar_width = slot_size * 9.0 + slot_spacing * 8.0 + 20.0;
+    let hotbar_height = slot_size + 20.0;
+    let hotbar_top = screen.bottom() - hotbar_height - 12.0;
+
+    let panel = egui::Rect::from_min_size(
+        egui::pos2(screen.center().x + hotbar_width * 0.5 + 10.0, hotbar_top - 48.0),
+        egui::vec2(130.0, 38.0),
+    );
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("survival_hud"),
+    ));
+
+    painter.rect_filled(
+        panel,
+        2.0,
+        egui::Color32::from_rgba_unmultiplied(15, 15, 15, 190),
+    );
+    painter.rect_stroke(
+        panel,
+        2.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(78, 78, 78)),
+    );
+
+    let hunger_ratio = (hunger / PLAYER_MAX_HUNGER).clamp(0.0, 1.0);
+    let stamina_ratio = (stamina / PLAYER_MAX_STAMINA).clamp(0.0, 1.0);
+
+    let hunger_bar = egui::Rect::from_min_size(panel.min + egui::vec2(8.0, 8.0), egui::vec2(114.0, 8.0));
+    let stamina_bar = egui::Rect::from_min_size(panel.min + egui::vec2(8.0, 22.0), egui::vec2(114.0, 8.0));
+
+    painter.text(
+        hunger_bar.left_center() + egui::vec2(0.0, -7.0),
+        egui::Align2::LEFT_BOTTOM,
+        format!("Food {:.0}/{}", hunger.clamp(0.0, PLAYER_MAX_HUNGER), PLAYER_MAX_HUNGER as i32),
+        egui::FontId::proportional(10.0),
+        egui::Color32::from_rgb(230, 210, 148),
+    );
+
+    painter.text(
+        stamina_bar.left_center() + egui::vec2(0.0, -7.0),
+        egui::Align2::LEFT_BOTTOM,
+        if sprinting { "Stamina (sprint)" } else { "Stamina" },
+        egui::FontId::proportional(10.0),
+        egui::Color32::from_rgb(172, 218, 236),
+    );
+
+    painter.rect_filled(
+        hunger_bar,
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+    );
+    if hunger_ratio > 0.0 {
+        let fill = egui::Rect::from_min_size(
+            hunger_bar.min,
+            egui::vec2(hunger_bar.width() * hunger_ratio, hunger_bar.height()),
+        );
+        painter.rect_filled(fill, 1.0, egui::Color32::from_rgb(210, 144, 58));
+    }
+
+    painter.rect_filled(
+        stamina_bar,
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+    );
+    if stamina_ratio > 0.0 {
+        let fill = egui::Rect::from_min_size(
+            stamina_bar.min,
+            egui::vec2(stamina_bar.width() * stamina_ratio, stamina_bar.height()),
+        );
+        let color = if sprinting {
+            egui::Color32::from_rgb(98, 205, 240)
+        } else {
+            egui::Color32::from_rgb(72, 162, 198)
+        };
+        painter.rect_filled(fill, 1.0, color);
     }
 }
 
@@ -2456,6 +2842,235 @@ fn draw_cave_mood_hud(ctx: &egui::Context, mood_percent: f32) {
         egui::FontId::proportional(13.0),
         egui::Color32::from_rgb(218, 218, 218),
     );
+}
+
+fn draw_target_hud(
+    ctx: &egui::Context,
+    target: &TargetHudInfo,
+    heart_textures: Option<&HeartHudTextures>,
+) {
+    let screen = ctx.screen_rect();
+    let panel_w = 324.0;
+    let panel_h = 62.0;
+    let panel = egui::Rect::from_min_size(
+        egui::pos2(screen.center().x - panel_w * 0.5, 8.0),
+        egui::vec2(panel_w, panel_h),
+    );
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("target_hud"),
+    ));
+
+    painter.rect_filled(
+        panel,
+        4.0,
+        egui::Color32::from_rgba_unmultiplied(18, 18, 18, 222),
+    );
+    painter.rect_stroke(
+        panel,
+        4.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(66, 66, 66)),
+    );
+
+    match target {
+        TargetHudInfo::Block {
+            name,
+            item_id,
+            break_progress,
+        } => {
+            painter.text(
+                panel.left_top() + egui::vec2(10.0, 10.0),
+                egui::Align2::LEFT_TOP,
+                format!("{name}  [id:{item_id}]"),
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(236, 236, 236),
+            );
+            painter.text(
+                panel.left_top() + egui::vec2(10.0, 28.0),
+                egui::Align2::LEFT_TOP,
+                "minecraft",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgb(182, 182, 182),
+            );
+
+            let bar = egui::Rect::from_min_size(
+                panel.left_bottom() + egui::vec2(10.0, -16.0),
+                egui::vec2(panel.width() - 20.0, 8.0),
+            );
+            let ratio = break_progress.clamp(0.0, 1.0);
+            let percent = (ratio * 100.0).round() as i32;
+            painter.rect_filled(bar, 2.0, egui::Color32::from_rgba_unmultiplied(8, 8, 8, 200));
+            if ratio > 0.0 {
+                let fill = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * ratio, bar.height()));
+                painter.rect_filled(fill, 2.0, egui::Color32::from_rgb(236, 232, 188));
+            }
+            painter.text(
+                bar.right_top() + egui::vec2(0.0, -2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("{percent}%"),
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(190, 190, 190),
+            );
+        }
+        TargetHudInfo::Mob { name, hp } => {
+            let hp = hp.max(0.0);
+            painter.text(
+                panel.left_top() + egui::vec2(10.0, 10.0),
+                egui::Align2::LEFT_TOP,
+                *name,
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(244, 232, 232),
+            );
+            painter.text(
+                panel.right_top() + egui::vec2(-10.0, 10.0),
+                egui::Align2::RIGHT_TOP,
+                format!("HP {:.0}", hp),
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgb(232, 182, 182),
+            );
+            if let Some(textures) = heart_textures {
+                draw_target_mob_hearts(&painter, panel, textures, hp);
+            } else {
+                painter.text(
+                    panel.left_top() + egui::vec2(10.0, 28.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("HP {:.1} | {}", hp, mob_hearts_text(hp)),
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_rgb(228, 170, 170),
+                );
+            }
+            painter.text(
+                panel.left_top() + egui::vec2(10.0, 44.0),
+                egui::Align2::LEFT_TOP,
+                "minecraft mob",
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(176, 176, 176),
+            );
+        }
+    }
+}
+
+fn draw_target_mob_hearts(
+    painter: &egui::Painter,
+    panel: egui::Rect,
+    textures: &HeartHudTextures,
+    hp: f32,
+) {
+    let hearts_total = (hp / 2.0).ceil() as usize;
+    let heart_size = 11.0;
+    let gap = 2.0;
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let y = panel.top() + 28.0;
+    let x0 = panel.left() + 10.0;
+
+    if hp > 150.0 {
+        let r0 = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(heart_size, heart_size));
+        let r1 = egui::Rect::from_min_size(
+            egui::pos2(x0 + heart_size + gap, y),
+            egui::vec2(heart_size, heart_size),
+        );
+        painter.image(textures.full.id(), r0, uv, egui::Color32::WHITE);
+        painter.image(textures.full.id(), r1, uv, egui::Color32::WHITE);
+        let extra = (hp - 150.0).round().max(0.0) as i32;
+        painter.text(
+            egui::pos2(x0 + (heart_size + gap) * 2.0 + 4.0, y + heart_size * 0.5),
+            egui::Align2::LEFT_CENTER,
+            format!("+{extra}"),
+            egui::FontId::proportional(12.0),
+            egui::Color32::from_rgb(228, 170, 170),
+        );
+        return;
+    }
+
+    let shown = hearts_total.min(20);
+    for i in 0..shown {
+        let x = x0 + i as f32 * (heart_size + gap);
+        let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(heart_size, heart_size));
+        let heart_hp = hp - i as f32 * 2.0;
+        if heart_hp >= 2.0 {
+            painter.image(textures.full.id(), rect, uv, egui::Color32::WHITE);
+        } else if heart_hp >= 1.0 {
+            painter.image(textures.half.id(), rect, uv, egui::Color32::WHITE);
+        } else {
+            painter.image(
+                textures.full.id(),
+                rect,
+                uv,
+                egui::Color32::from_rgba_unmultiplied(48, 48, 48, 180),
+            );
+        }
+    }
+
+    if hearts_total > shown {
+        let extra = hearts_total - shown;
+        let text_x = x0 + shown as f32 * (heart_size + gap) + 4.0;
+        painter.text(
+            egui::pos2(text_x, y + heart_size * 0.5),
+            egui::Align2::LEFT_CENTER,
+            format!("+{extra}"),
+            egui::FontId::proportional(12.0),
+            egui::Color32::from_rgb(228, 170, 170),
+        );
+    }
+}
+
+fn mob_hearts_text(hp: f32) -> String {
+    let hp = hp.max(0.0);
+    let full = (hp / 2.0).floor() as usize;
+    let has_half = (hp - full as f32 * 2.0) >= 1.0;
+    let hearts_total = full + usize::from(has_half);
+
+    if hp > 150.0 {
+        let extra = (hp - 150.0).round().max(0.0) as i32;
+        return format!("heart heart +{extra}");
+    }
+
+    if hearts_total > 20 {
+        if has_half {
+            return format!("heart x{full} +half-heart");
+        }
+        return format!("heart x{full}");
+    }
+
+    let mut chunks = Vec::with_capacity(hearts_total.max(1));
+    for _ in 0..full {
+        chunks.push("heart");
+    }
+    if has_half {
+        chunks.push("half-heart");
+    }
+    if chunks.is_empty() {
+        "no hearts".to_string()
+    } else {
+        chunks.join(" ")
+    }
+}
+
+fn block_display_name(block: Block) -> &'static str {
+    match block {
+        Block::Air | Block::CaveAir => "Air",
+        Block::Workbench => "Crafting Table",
+        Block::Furnace => "Furnace",
+        Block::Coal => "Coal",
+        Block::IronIngot => "Iron Ingot",
+        Block::Torch => "Torch",
+        Block::Wood => "Oak Planks",
+        Block::Stick => "Stick",
+        Block::Grass => "Grass Block",
+        Block::Dirt => "Dirt",
+        Block::FarmlandDry => "Farmland",
+        Block::FarmlandWet => "Farmland (Wet)",
+        Block::Stone => "Stone",
+        Block::Sand => "Sand",
+        Block::Water => "Water",
+        Block::Bedrock => "Bedrock",
+        Block::Log => "Oak Log",
+        Block::Leaves => "Oak Leaves",
+        Block::LogBottom => "Oak Log Top",
+        Block::CoalOre => "Coal Ore",
+        Block::IronOre => "Iron Ore",
+        Block::CopperOre => "Copper Ore",
+    }
 }
 
 fn draw_f3_overlay(ctx: &egui::Context, data: &DebugOverlayData) {

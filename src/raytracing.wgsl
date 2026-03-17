@@ -88,7 +88,8 @@ fn face_texture_layer(base_layer: u32, normal: vec3<f32>) -> i32 {
     // Keep side/top selection parity with raster path:
     // grass: top=grass, all others=dirt
     // log: top/bottom=logBottom, sides=log
-    // workbench: top=workbench_top, +Z=workbench_front, others=workbench_side
+    // wood(planks): top/bottom=logBottom, sides=wood
+    // workbench: top/bottom=workbench_top, +/-Z=workbench_front, +/-X=workbench_side
     // furnace: top/bottom=furnace_top, +Z=furnace_front, others=furnace_side
     if base_layer == 1u {
         if normal.y > 0.5 {
@@ -102,11 +103,17 @@ fn face_texture_layer(base_layer: u32, normal: vec3<f32>) -> i32 {
         }
         return 7;
     }
+    if base_layer == 17u {
+        if abs(normal.y) > 0.5 {
+            return 8;
+        }
+        return 17;
+    }
     if base_layer == 16u {
-        if normal.y > 0.5 {
+        if abs(normal.y) > 0.5 {
             return 19;
         }
-        if normal.z > 0.5 {
+        if abs(normal.z) > 0.5 {
             return 20;
         }
         return 16;

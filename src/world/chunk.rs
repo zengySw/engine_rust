@@ -462,6 +462,12 @@ impl Chunk {
         let sampler = TerrainSampler::new(seed);
         let cave_a = Perlin::new(seed.wrapping_add(20));
         let cave_b = Perlin::new(seed.wrapping_add(21));
+        let cave_c = Perlin::new(seed.wrapping_add(22));
+        let cave_d = Perlin::new(seed.wrapping_add(23));
+        let ore_coal = Perlin::new(seed.wrapping_add(30));
+        let ore_iron = Perlin::new(seed.wrapping_add(31));
+        let ore_copper = Perlin::new(seed.wrapping_add(32));
+        let ore_warp = Perlin::new(seed.wrapping_add(33));
         let size = CHUNK_W * CHUNK_H * CHUNK_D;
         let mut blocks = vec![Block::Air; size].into_boxed_slice();
 
@@ -611,20 +617,51 @@ impl Chunk {
                 blocks[idx(x, 0, z)] = Block::Bedrock;
                 let solid_max = surface.saturating_sub(fill_depth);
                 let cave_thr = biome::cave_threshold(b);
-                let cave_limit = surface.saturating_sub(8);
+                let cave_limit = surface.saturating_sub(6);
                 if solid_max > 1 {
                     for y in 1..solid_max.min(CHUNK_H) {
                         let can_cave = y > 8 && y < cave_limit;
                         if can_cave {
                             let n0 = cave_a.get([wx / 26.0, y as f64 / 22.0, wz / 26.0]);
                             let n1 = cave_b.get([wx / 14.0, y as f64 / 14.0, wz / 14.0]).abs();
-                            if !(n0 > cave_thr && n1 > 0.33) {
-                                blocks[idx(x, y, z)] = pick_stone_block(seed, wx_i, y as i32, wz_i, b);
+                            let n2 =
+                                1.0 - cave_c.get([wx / 44.0 + 19.3, y as f64 / 20.0, wz / 44.0 - 11.7]).abs();
+                            let n3 = cave_d.get([wx / 21.0 - 7.1, y as f64 / 12.0 + 4.6, wz / 21.0 + 13.2]).abs();
+                            let depth_bonus =
+                                ((cave_limit as i32 - y as i32).max(0) as f64 / 80.0).clamp(0.0, 0.16);
+                            let cheese_thr = cave_thr - 0.09 - depth_bonus;
+                            let tunnel_thr = (0.82 - depth_bonus * 0.65).clamp(0.62, 0.85);
+                            let cheese_carve = n0 > cheese_thr && n1 > 0.27;
+                            let tunnel_carve = n2 > tunnel_thr && n3 > 0.18;
+                            let near_surface = surface.saturating_sub(y) <= 5;
+                            let carve = (cheese_carve || tunnel_carve) && (!near_surface || n2 > 0.90);
+                            if !carve {
+                                blocks[idx(x, y, z)] = pick_stone_block(
+                                    seed,
+                                    wx_i,
+                                    y as i32,
+                                    wz_i,
+                                    b,
+                                    &ore_coal,
+                                    &ore_iron,
+                                    &ore_copper,
+                                    &ore_warp,
+                                );
                             } else {
                                 blocks[idx(x, y, z)] = Block::CaveAir;
                             }
                         } else {
-                            blocks[idx(x, y, z)] = pick_stone_block(seed, wx_i, y as i32, wz_i, b);
+                            blocks[idx(x, y, z)] = pick_stone_block(
+                                seed,
+                                wx_i,
+                                y as i32,
+                                wz_i,
+                                b,
+                                &ore_coal,
+                                &ore_iron,
+                                &ore_copper,
+                                &ore_warp,
+                            );
                         }
                     }
                 }
@@ -667,91 +704,594 @@ impl Chunk {
         neighbor_pz: Option<&Chunk>,
         neighbor_nz: Option<&Chunk>,
     ) -> Vec<Vertex> {
-        let mut verts = Vec::with_capacity(4096);
-
-        const FACES: [([f32; 3], [[f32; 3]; 4]); 6] = [
-            ([1., 0., 0.],  [[1.,0.,0.],[1.,1.,0.],[1.,1.,1.],[1.,0.,1.]]),
-            ([-1.,0., 0.],  [[0.,0.,1.],[0.,1.,1.],[0.,1.,0.],[0.,0.,0.]]),
-            ([0., 1., 0.],  [[0.,1.,0.],[0.,1.,1.],[1.,1.,1.],[1.,1.,0.]]),
-            ([0.,-1., 0.],  [[0.,0.,1.],[0.,0.,0.],[1.,0.,0.],[1.,0.,1.]]),
-            ([0., 0., 1.],  [[1.,0.,1.],[1.,1.,1.],[0.,1.,1.],[0.,0.,1.]]),
-            ([0., 0.,-1.],  [[0.,0.,0.],[0.,1.,0.],[1.,1.,0.],[1.,0.,0.]]),
-        ];
-
+        let mut verts = Vec::with_capacity(8192);
         let ox = (self.cx * CHUNK_W as i32) as f32;
         let oz = (self.cz * CHUNK_D as i32) as f32;
 
-        for x in 0..CHUNK_W {
-            for z in 0..CHUNK_D {
-                let surface_y = self.heightmap.surface[x][z] as usize;
-                let mut col_top = (surface_y + 1).max(SEA_LEVEL + 1).min(CHUNK_H);
-
-                let scan_max = (surface_y + 10).min(CHUNK_H - 1);
-                if scan_max > surface_y {
-                    for y in (surface_y + 1..=scan_max).rev() {
-                        if !self.get(x, y, z).is_air() {
-                            col_top = (y + 1).min(CHUNK_H);
-                            break;
-                        }
-                    }
+        let block_at = |bx: i32, by: i32, bz: i32| -> Block {
+            if by < 0 {
+                return Block::Bedrock;
+            }
+            if by >= CHUNK_H as i32 {
+                return Block::Air;
+            }
+            if bx >= 0 && bx < CHUNK_W as i32 && bz >= 0 && bz < CHUNK_D as i32 {
+                return self.get(bx as usize, by as usize, bz as usize);
+            }
+            if bx < 0 {
+                if bz < 0 || bz >= CHUNK_D as i32 {
+                    return Block::Air;
                 }
+                return neighbor_px.map_or(Block::Air, |c| {
+                    c.get(CHUNK_W - 1, by as usize, bz as usize)
+                });
+            }
+            if bx >= CHUNK_W as i32 {
+                if bz < 0 || bz >= CHUNK_D as i32 {
+                    return Block::Air;
+                }
+                return neighbor_nx.map_or(Block::Air, |c| c.get(0, by as usize, bz as usize));
+            }
+            if bz < 0 {
+                if bx < 0 || bx >= CHUNK_W as i32 {
+                    return Block::Air;
+                }
+                return neighbor_pz.map_or(Block::Air, |c| {
+                    c.get(bx as usize, by as usize, CHUNK_D - 1)
+                });
+            }
+            if bz >= CHUNK_D as i32 {
+                if bx < 0 || bx >= CHUNK_W as i32 {
+                    return Block::Air;
+                }
+                return neighbor_nz.map_or(Block::Air, |c| c.get(bx as usize, by as usize, 0));
+            }
+            Block::Air
+        };
 
-                for y in 0..col_top {
-                    let block = self.get(x, y, z);
-                    if !block.is_solid() { continue; }
+        let mut emit_quad = |normal: [f32; 3], tex_idx: u32, corners: [[f32; 3]; 4], corner_ao: [f32; 4], u_span: f32, v_span: f32| {
+            let uv = [[0.0, v_span], [0.0, 0.0], [u_span, 0.0], [u_span, v_span]];
+            let quad = [
+                Vertex {
+                    pos: corners[0],
+                    normal: [normal[0] * corner_ao[0], normal[1] * corner_ao[0], normal[2] * corner_ao[0]],
+                    tex_idx,
+                    uv: uv[0],
+                },
+                Vertex {
+                    pos: corners[1],
+                    normal: [normal[0] * corner_ao[1], normal[1] * corner_ao[1], normal[2] * corner_ao[1]],
+                    tex_idx,
+                    uv: uv[1],
+                },
+                Vertex {
+                    pos: corners[2],
+                    normal: [normal[0] * corner_ao[2], normal[1] * corner_ao[2], normal[2] * corner_ao[2]],
+                    tex_idx,
+                    uv: uv[2],
+                },
+                Vertex {
+                    pos: corners[3],
+                    normal: [normal[0] * corner_ao[3], normal[1] * corner_ao[3], normal[2] * corner_ao[3]],
+                    tex_idx,
+                    uv: uv[3],
+                },
+            ];
+            verts.extend_from_slice(&[quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]);
+        };
 
-                    let solid = |bx: i32, by: i32, bz: i32| -> bool {
-                        if by < 0 || by >= CHUNK_H as i32 { return by < 0; }
-                        if bx < 0 {
-                            return neighbor_px.map_or(false, |c| {
-                                c.get(CHUNK_W - 1, by as usize, bz as usize).is_solid()
-                            });
-                        }
-                        if bx >= CHUNK_W as i32 {
-                            return neighbor_nx.map_or(false, |c| c.get(0, by as usize, bz as usize).is_solid());
-                        }
-                        if bz < 0 {
-                            return neighbor_pz.map_or(false, |c| {
-                                c.get(bx as usize, by as usize, CHUNK_D - 1).is_solid()
-                            });
-                        }
-                        if bz >= CHUNK_D as i32 {
-                            return neighbor_nz.map_or(false, |c| c.get(bx as usize, by as usize, 0).is_solid());
-                        }
-                        self.get(bx as usize, by as usize, bz as usize).is_solid()
-                    };
-
-                    let xi = x as i32;
-                    let yi = y as i32;
-                    let zi = z as i32;
-                    let neighbors = [
-                        solid(xi+1,yi,zi), solid(xi-1,yi,zi),
-                        solid(xi,yi+1,zi), solid(xi,yi-1,zi),
-                        solid(xi,yi,zi+1), solid(xi,yi,zi-1),
-                    ];
-
-                    for (i, (normal, corners)) in FACES.iter().enumerate() {
-                        if neighbors[i] { continue; }
-                        let tex  = face_texture_for(block, i);
-                        let uvs  = [[0.0f32,1.0],[0.0,0.0],[1.0,0.0],[1.0,1.0]];
-                        let v: [Vertex; 4] = std::array::from_fn(|j| Vertex {
-                            pos: [
-                                ox + x as f32 + corners[j][0],
-                                y as f32 + corners[j][1],
-                                oz + z as f32 + corners[j][2],
-                            ],
-                            normal: *normal,
-                            tex_idx: tex,
-                            uv: uvs[j],
-                        });
-                        verts.extend_from_slice(&[v[0],v[1],v[2],v[0],v[2],v[3]]);
+        // +X faces
+        for x in 0..CHUNK_W {
+            let mut mask = vec![None; CHUNK_H * CHUNK_D];
+            for y in 0..CHUNK_H {
+                for z in 0..CHUNK_D {
+                    let bx = x as i32;
+                    let by = y as i32;
+                    let bz = z as i32;
+                    let block = block_at(bx, by, bz);
+                    if !block.is_solid() || block_at(bx + 1, by, bz).is_solid() {
+                        continue;
                     }
+                    mask[y * CHUNK_D + z] = Some(face_texture_for(block, 0));
+                }
+            }
+            greedy_merge_mask(&mask, CHUNK_H, CHUNK_D, |y0, z0, h, w, tex_idx| {
+                let xw = ox + x as f32 + 1.0;
+                let y_min = y0 as f32;
+                let y_max = (y0 + h) as f32;
+                let z_min = z0 as f32;
+                let z_max = (z0 + w) as f32;
+                let ao = face_ao_px(&block_at, x, y0, z0, h, w);
+                let corners = [
+                    [xw, y_min, oz + z_min],
+                    [xw, y_max, oz + z_min],
+                    [xw, y_max, oz + z_max],
+                    [xw, y_min, oz + z_max],
+                ];
+                emit_quad([1.0, 0.0, 0.0], tex_idx, corners, ao, w as f32, h as f32);
+            });
+        }
+
+        // -X faces
+        for x in 0..CHUNK_W {
+            let mut mask = vec![None; CHUNK_H * CHUNK_D];
+            for y in 0..CHUNK_H {
+                for z in 0..CHUNK_D {
+                    let bx = x as i32;
+                    let by = y as i32;
+                    let bz = z as i32;
+                    let block = block_at(bx, by, bz);
+                    if !block.is_solid() || block_at(bx - 1, by, bz).is_solid() {
+                        continue;
+                    }
+                    mask[y * CHUNK_D + z] = Some(face_texture_for(block, 1));
+                }
+            }
+            greedy_merge_mask(&mask, CHUNK_H, CHUNK_D, |y0, z0, h, w, tex_idx| {
+                let xw = ox + x as f32;
+                let y_min = y0 as f32;
+                let y_max = (y0 + h) as f32;
+                let z_min = z0 as f32;
+                let z_max = (z0 + w) as f32;
+                let ao = face_ao_nx(&block_at, x, y0, z0, h, w);
+                let corners = [
+                    [xw, y_min, oz + z_max],
+                    [xw, y_max, oz + z_max],
+                    [xw, y_max, oz + z_min],
+                    [xw, y_min, oz + z_min],
+                ];
+                emit_quad([-1.0, 0.0, 0.0], tex_idx, corners, ao, w as f32, h as f32);
+            });
+        }
+
+        // +Y faces
+        for y in 0..CHUNK_H {
+            let mut mask = vec![None; CHUNK_D * CHUNK_W];
+            for z in 0..CHUNK_D {
+                for x in 0..CHUNK_W {
+                    let bx = x as i32;
+                    let by = y as i32;
+                    let bz = z as i32;
+                    let block = block_at(bx, by, bz);
+                    if !block.is_solid() || block_at(bx, by + 1, bz).is_solid() {
+                        continue;
+                    }
+                    mask[z * CHUNK_W + x] = Some(face_texture_for(block, 2));
+                }
+            }
+            greedy_merge_mask(&mask, CHUNK_D, CHUNK_W, |z0, x0, h, w, tex_idx| {
+                let yw = y as f32 + 1.0;
+                let x_min = x0 as f32;
+                let x_max = (x0 + w) as f32;
+                let z_min = z0 as f32;
+                let z_max = (z0 + h) as f32;
+                let ao = face_ao_py(&block_at, y, x0, z0, w, h);
+                let corners = [
+                    [ox + x_min, yw, oz + z_min],
+                    [ox + x_min, yw, oz + z_max],
+                    [ox + x_max, yw, oz + z_max],
+                    [ox + x_max, yw, oz + z_min],
+                ];
+                emit_quad([0.0, 1.0, 0.0], tex_idx, corners, ao, w as f32, h as f32);
+            });
+        }
+
+        // -Y faces
+        for y in 0..CHUNK_H {
+            let mut mask = vec![None; CHUNK_D * CHUNK_W];
+            for z in 0..CHUNK_D {
+                for x in 0..CHUNK_W {
+                    let bx = x as i32;
+                    let by = y as i32;
+                    let bz = z as i32;
+                    let block = block_at(bx, by, bz);
+                    if !block.is_solid() || block_at(bx, by - 1, bz).is_solid() {
+                        continue;
+                    }
+                    mask[z * CHUNK_W + x] = Some(face_texture_for(block, 3));
+                }
+            }
+            greedy_merge_mask(&mask, CHUNK_D, CHUNK_W, |z0, x0, h, w, tex_idx| {
+                let yw = y as f32;
+                let x_min = x0 as f32;
+                let x_max = (x0 + w) as f32;
+                let z_min = z0 as f32;
+                let z_max = (z0 + h) as f32;
+                let ao = face_ao_ny(&block_at, y, x0, z0, w, h);
+                let corners = [
+                    [ox + x_min, yw, oz + z_max],
+                    [ox + x_min, yw, oz + z_min],
+                    [ox + x_max, yw, oz + z_min],
+                    [ox + x_max, yw, oz + z_max],
+                ];
+                emit_quad([0.0, -1.0, 0.0], tex_idx, corners, ao, w as f32, h as f32);
+            });
+        }
+
+        // +Z faces
+        for z in 0..CHUNK_D {
+            let mut mask = vec![None; CHUNK_H * CHUNK_W];
+            for y in 0..CHUNK_H {
+                for x in 0..CHUNK_W {
+                    let bx = x as i32;
+                    let by = y as i32;
+                    let bz = z as i32;
+                    let block = block_at(bx, by, bz);
+                    if !block.is_solid() || block_at(bx, by, bz + 1).is_solid() {
+                        continue;
+                    }
+                    mask[y * CHUNK_W + x] = Some(face_texture_for(block, 4));
+                }
+            }
+            greedy_merge_mask(&mask, CHUNK_H, CHUNK_W, |y0, x0, h, w, tex_idx| {
+                let zw = oz + z as f32 + 1.0;
+                let y_min = y0 as f32;
+                let y_max = (y0 + h) as f32;
+                let x_min = x0 as f32;
+                let x_max = (x0 + w) as f32;
+                let ao = face_ao_pz(&block_at, z, x0, y0, w, h);
+                let corners = [
+                    [ox + x_max, y_min, zw],
+                    [ox + x_max, y_max, zw],
+                    [ox + x_min, y_max, zw],
+                    [ox + x_min, y_min, zw],
+                ];
+                emit_quad([0.0, 0.0, 1.0], tex_idx, corners, ao, w as f32, h as f32);
+            });
+        }
+
+        // -Z faces
+        for z in 0..CHUNK_D {
+            let mut mask = vec![None; CHUNK_H * CHUNK_W];
+            for y in 0..CHUNK_H {
+                for x in 0..CHUNK_W {
+                    let bx = x as i32;
+                    let by = y as i32;
+                    let bz = z as i32;
+                    let block = block_at(bx, by, bz);
+                    if !block.is_solid() || block_at(bx, by, bz - 1).is_solid() {
+                        continue;
+                    }
+                    mask[y * CHUNK_W + x] = Some(face_texture_for(block, 5));
+                }
+            }
+            greedy_merge_mask(&mask, CHUNK_H, CHUNK_W, |y0, x0, h, w, tex_idx| {
+                let zw = oz + z as f32;
+                let y_min = y0 as f32;
+                let y_max = (y0 + h) as f32;
+                let x_min = x0 as f32;
+                let x_max = (x0 + w) as f32;
+                let ao = face_ao_nz(&block_at, z, x0, y0, w, h);
+                let corners = [
+                    [ox + x_min, y_min, zw],
+                    [ox + x_min, y_max, zw],
+                    [ox + x_max, y_max, zw],
+                    [ox + x_max, y_min, zw],
+                ];
+                emit_quad([0.0, 0.0, -1.0], tex_idx, corners, ao, w as f32, h as f32);
+            });
+        }
+
+        // Torch meshes (small post-like block, not full cube).
+        // Torch is non-solid so it is skipped by the greedy solid pass above.
+        let torch_tex = Block::Torch.texture_index();
+        for x in 0..CHUNK_W {
+            for y in 0..CHUNK_H {
+                for z in 0..CHUNK_D {
+                    if self.get(x, y, z) != Block::Torch {
+                        continue;
+                    }
+
+                    let base_x = ox + x as f32;
+                    let base_y = y as f32;
+                    let base_z = oz + z as f32;
+                    let half = 0.065f32;
+                    let min_x = base_x + 0.5 - half;
+                    let max_x = base_x + 0.5 + half;
+                    let min_z = base_z + 0.5 - half;
+                    let max_z = base_z + 0.5 + half;
+                    let min_y = base_y;
+                    let max_y = base_y + 0.64;
+                    let ao = [1.0, 1.0, 1.0, 1.0];
+
+                    emit_quad(
+                        [1.0, 0.0, 0.0],
+                        torch_tex,
+                        [
+                            [max_x, min_y, min_z],
+                            [max_x, max_y, min_z],
+                            [max_x, max_y, max_z],
+                            [max_x, min_y, max_z],
+                        ],
+                        ao,
+                        1.0,
+                        1.0,
+                    );
+                    emit_quad(
+                        [-1.0, 0.0, 0.0],
+                        torch_tex,
+                        [
+                            [min_x, min_y, max_z],
+                            [min_x, max_y, max_z],
+                            [min_x, max_y, min_z],
+                            [min_x, min_y, min_z],
+                        ],
+                        ao,
+                        1.0,
+                        1.0,
+                    );
+                    emit_quad(
+                        [0.0, 1.0, 0.0],
+                        torch_tex,
+                        [
+                            [min_x, max_y, min_z],
+                            [min_x, max_y, max_z],
+                            [max_x, max_y, max_z],
+                            [max_x, max_y, min_z],
+                        ],
+                        ao,
+                        1.0,
+                        1.0,
+                    );
+                    emit_quad(
+                        [0.0, -1.0, 0.0],
+                        torch_tex,
+                        [
+                            [min_x, min_y, max_z],
+                            [min_x, min_y, min_z],
+                            [max_x, min_y, min_z],
+                            [max_x, min_y, max_z],
+                        ],
+                        ao,
+                        1.0,
+                        1.0,
+                    );
+                    emit_quad(
+                        [0.0, 0.0, 1.0],
+                        torch_tex,
+                        [
+                            [max_x, min_y, max_z],
+                            [max_x, max_y, max_z],
+                            [min_x, max_y, max_z],
+                            [min_x, min_y, max_z],
+                        ],
+                        ao,
+                        1.0,
+                        1.0,
+                    );
+                    emit_quad(
+                        [0.0, 0.0, -1.0],
+                        torch_tex,
+                        [
+                            [min_x, min_y, min_z],
+                            [min_x, max_y, min_z],
+                            [max_x, max_y, min_z],
+                            [max_x, min_y, min_z],
+                        ],
+                        ao,
+                        1.0,
+                        1.0,
+                    );
                 }
             }
         }
 
         verts
     }
+}
+
+fn greedy_merge_mask(
+    mask: &[Option<u32>],
+    dim_a: usize,
+    dim_b: usize,
+    mut emit: impl FnMut(usize, usize, usize, usize, u32),
+) {
+    let mut used = vec![false; dim_a * dim_b];
+    for a in 0..dim_a {
+        for b in 0..dim_b {
+            let i = a * dim_b + b;
+            let Some(tex_idx) = mask[i] else {
+                continue;
+            };
+            if used[i] {
+                continue;
+            }
+
+            let mut w = 1usize;
+            while b + w < dim_b {
+                let ii = a * dim_b + (b + w);
+                if used[ii] || mask[ii] != Some(tex_idx) {
+                    break;
+                }
+                w += 1;
+            }
+
+            let mut h = 1usize;
+            'expand_h: while a + h < dim_a {
+                for bb in 0..w {
+                    let ii = (a + h) * dim_b + (b + bb);
+                    if used[ii] || mask[ii] != Some(tex_idx) {
+                        break 'expand_h;
+                    }
+                }
+                h += 1;
+            }
+
+            for aa in 0..h {
+                for bb in 0..w {
+                    used[(a + aa) * dim_b + (b + bb)] = true;
+                }
+            }
+
+            emit(a, b, h, w, tex_idx);
+        }
+    }
+}
+
+#[inline]
+fn ao_factor(side1: bool, side2: bool, corner: bool) -> f32 {
+    let level = if side1 && side2 {
+        0
+    } else {
+        3 - (side1 as u8 + side2 as u8 + corner as u8)
+    };
+    0.55 + level as f32 * 0.15
+}
+
+fn face_ao_px(
+    block_at: &impl Fn(i32, i32, i32) -> Block,
+    x: usize,
+    y0: usize,
+    z0: usize,
+    h: usize,
+    w: usize,
+) -> [f32; 4] {
+    let x_out = x as i32 + 1;
+    let y1 = y0 + h;
+    let z1 = z0 + w;
+    let corners = [(y0, z0), (y1, z0), (y1, z1), (y0, z1)];
+    let mut ao = [1.0; 4];
+    for (i, (yc, zc)) in corners.into_iter().enumerate() {
+        let by = if yc == y0 { y0 as i32 } else { y1 as i32 - 1 };
+        let bz = if zc == z0 { z0 as i32 } else { z1 as i32 - 1 };
+        let sy = if yc == y0 { -1 } else { 1 };
+        let sz = if zc == z0 { -1 } else { 1 };
+        let side1 = block_at(x_out, by + sy, bz).is_solid();
+        let side2 = block_at(x_out, by, bz + sz).is_solid();
+        let corner = block_at(x_out, by + sy, bz + sz).is_solid();
+        ao[i] = ao_factor(side1, side2, corner);
+    }
+    ao
+}
+
+fn face_ao_nx(
+    block_at: &impl Fn(i32, i32, i32) -> Block,
+    x: usize,
+    y0: usize,
+    z0: usize,
+    h: usize,
+    w: usize,
+) -> [f32; 4] {
+    let x_out = x as i32 - 1;
+    let y1 = y0 + h;
+    let z1 = z0 + w;
+    let corners = [(y0, z1), (y1, z1), (y1, z0), (y0, z0)];
+    let mut ao = [1.0; 4];
+    for (i, (yc, zc)) in corners.into_iter().enumerate() {
+        let by = if yc == y0 { y0 as i32 } else { y1 as i32 - 1 };
+        let bz = if zc == z0 { z0 as i32 } else { z1 as i32 - 1 };
+        let sy = if yc == y0 { -1 } else { 1 };
+        let sz = if zc == z0 { -1 } else { 1 };
+        let side1 = block_at(x_out, by + sy, bz).is_solid();
+        let side2 = block_at(x_out, by, bz + sz).is_solid();
+        let corner = block_at(x_out, by + sy, bz + sz).is_solid();
+        ao[i] = ao_factor(side1, side2, corner);
+    }
+    ao
+}
+
+fn face_ao_py(
+    block_at: &impl Fn(i32, i32, i32) -> Block,
+    y: usize,
+    x0: usize,
+    z0: usize,
+    w: usize,
+    h: usize,
+) -> [f32; 4] {
+    let y_out = y as i32 + 1;
+    let x1 = x0 + w;
+    let z1 = z0 + h;
+    let corners = [(x0, z0), (x0, z1), (x1, z1), (x1, z0)];
+    let mut ao = [1.0; 4];
+    for (i, (xc, zc)) in corners.into_iter().enumerate() {
+        let bx = if xc == x0 { x0 as i32 } else { x1 as i32 - 1 };
+        let bz = if zc == z0 { z0 as i32 } else { z1 as i32 - 1 };
+        let sx = if xc == x0 { -1 } else { 1 };
+        let sz = if zc == z0 { -1 } else { 1 };
+        let side1 = block_at(bx + sx, y_out, bz).is_solid();
+        let side2 = block_at(bx, y_out, bz + sz).is_solid();
+        let corner = block_at(bx + sx, y_out, bz + sz).is_solid();
+        ao[i] = ao_factor(side1, side2, corner);
+    }
+    ao
+}
+
+fn face_ao_ny(
+    block_at: &impl Fn(i32, i32, i32) -> Block,
+    y: usize,
+    x0: usize,
+    z0: usize,
+    w: usize,
+    h: usize,
+) -> [f32; 4] {
+    let y_out = y as i32 - 1;
+    let x1 = x0 + w;
+    let z1 = z0 + h;
+    let corners = [(x0, z1), (x0, z0), (x1, z0), (x1, z1)];
+    let mut ao = [1.0; 4];
+    for (i, (xc, zc)) in corners.into_iter().enumerate() {
+        let bx = if xc == x0 { x0 as i32 } else { x1 as i32 - 1 };
+        let bz = if zc == z0 { z0 as i32 } else { z1 as i32 - 1 };
+        let sx = if xc == x0 { -1 } else { 1 };
+        let sz = if zc == z0 { -1 } else { 1 };
+        let side1 = block_at(bx + sx, y_out, bz).is_solid();
+        let side2 = block_at(bx, y_out, bz + sz).is_solid();
+        let corner = block_at(bx + sx, y_out, bz + sz).is_solid();
+        ao[i] = ao_factor(side1, side2, corner);
+    }
+    ao
+}
+
+fn face_ao_pz(
+    block_at: &impl Fn(i32, i32, i32) -> Block,
+    z: usize,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+) -> [f32; 4] {
+    let z_out = z as i32 + 1;
+    let x1 = x0 + w;
+    let y1 = y0 + h;
+    let corners = [(x1, y0), (x1, y1), (x0, y1), (x0, y0)];
+    let mut ao = [1.0; 4];
+    for (i, (xc, yc)) in corners.into_iter().enumerate() {
+        let bx = if xc == x0 { x0 as i32 } else { x1 as i32 - 1 };
+        let by = if yc == y0 { y0 as i32 } else { y1 as i32 - 1 };
+        let sx = if xc == x0 { -1 } else { 1 };
+        let sy = if yc == y0 { -1 } else { 1 };
+        let side1 = block_at(bx + sx, by, z_out).is_solid();
+        let side2 = block_at(bx, by + sy, z_out).is_solid();
+        let corner = block_at(bx + sx, by + sy, z_out).is_solid();
+        ao[i] = ao_factor(side1, side2, corner);
+    }
+    ao
+}
+
+fn face_ao_nz(
+    block_at: &impl Fn(i32, i32, i32) -> Block,
+    z: usize,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+) -> [f32; 4] {
+    let z_out = z as i32 - 1;
+    let x1 = x0 + w;
+    let y1 = y0 + h;
+    let corners = [(x0, y0), (x0, y1), (x1, y1), (x1, y0)];
+    let mut ao = [1.0; 4];
+    for (i, (xc, yc)) in corners.into_iter().enumerate() {
+        let bx = if xc == x0 { x0 as i32 } else { x1 as i32 - 1 };
+        let by = if yc == y0 { y0 as i32 } else { y1 as i32 - 1 };
+        let sx = if xc == x0 { -1 } else { 1 };
+        let sy = if yc == y0 { -1 } else { 1 };
+        let side1 = block_at(bx + sx, by, z_out).is_solid();
+        let side2 = block_at(bx, by + sy, z_out).is_solid();
+        let corner = block_at(bx + sx, by + sy, z_out).is_solid();
+        ao[i] = ao_factor(side1, side2, corner);
+    }
+    ao
 }
 
 #[inline]
@@ -779,10 +1319,14 @@ fn face_texture_for(block: Block, face_idx: usize) -> u32 {
             if face_idx == 2 || face_idx == 3 { Block::LogBottom.texture_index() }
             else                               { Block::Log.texture_index()       }
         }
+        Block::Wood => {
+            if face_idx == 2 || face_idx == 3 { Block::LogBottom.texture_index() }
+            else                               { Block::Wood.texture_index()      }
+        }
         Block::Workbench => {
-            if face_idx == 2 {
+            if face_idx == 2 || face_idx == 3 {
                 WORKBENCH_TOP_TEX_IDX
-            } else if face_idx == 4 {
+            } else if face_idx == 4 || face_idx == 5 {
                 WORKBENCH_FRONT_TEX_IDX
             } else {
                 Block::Workbench.texture_index()
@@ -975,9 +1519,11 @@ fn place_boulders(blocks: &mut [Block], cx: i32, cz: i32, seed: u32, hmap: &Heig
             let ry = 1;
             let center_y = surface as i32 + 1;
             let ore_roll = ((h >> 20) & 0xff) as f32 / 255.0;
-            let boulder_block = if ore_roll < 0.07 {
+            let boulder_block = if ore_roll < 0.055 {
                 Block::CoalOre
-            } else if ore_roll < 0.09 {
+            } else if ore_roll < 0.075 {
+                Block::IronOre
+            } else if ore_roll < 0.095 {
                 Block::CopperOre
             } else {
                 Block::Stone
@@ -1018,23 +1564,77 @@ fn place_boulders(blocks: &mut [Block], cx: i32, cz: i32, seed: u32, hmap: &Heig
 }
 
 #[inline]
-fn pick_stone_block(seed: u32, wx: i32, wy: i32, wz: i32, biome: Biome) -> Block {
+fn pick_stone_block(
+    seed: u32,
+    wx: i32,
+    wy: i32,
+    wz: i32,
+    biome: Biome,
+    ore_coal: &Perlin,
+    ore_iron: &Perlin,
+    ore_copper: &Perlin,
+    ore_warp: &Perlin,
+) -> Block {
     if wy < 1 {
         return Block::Stone;
     }
 
+    // Vein-like ore placement:
+    // combine low-frequency primary noise with high-frequency ridge mask.
+    let wxf = wx as f64;
+    let wyf = wy as f64;
+    let wzf = wz as f64;
+    let warp = ore_warp.get([wxf / 88.0, wyf / 88.0 + 17.0, wzf / 88.0 - 11.0]) * 5.5;
+    let vx = wxf + warp;
+    let vz = wzf - warp * 0.65;
+    let mountain_bonus = if biome::is_mountain(biome) { 0.02 } else { 0.0 };
+
+    // Iron veins: deep and dense below y~30, tapering up to y~68.
+    if wy <= 68 {
+        let primary = ore_iron.get([vx / 18.0, wyf / 12.0, vz / 18.0]);
+        let ridge = ore_warp.get([vx / 7.5 + 41.0, wyf / 7.5 - 13.0, vz / 7.5 + 9.0]).abs();
+        let signal = primary - ridge * 0.44;
+        let depth = (1.0 - (wyf / 68.0)).clamp(0.0, 1.0);
+        let threshold = 0.56 - depth * 0.14 - mountain_bonus;
+        if signal > threshold {
+            return Block::IronOre;
+        }
+    }
+
+    // Copper veins: strongest in mid-depth.
+    if wy <= 84 {
+        let primary = ore_copper.get([vx / 20.0 + 13.0, wyf / 11.0, vz / 20.0 - 17.0]);
+        let ridge = ore_warp.get([vx / 8.0 - 5.0, wyf / 8.0 + 27.0, vz / 8.0 + 3.0]).abs();
+        let mid_bias = 1.0 - ((wyf - 36.0).abs() / 40.0).clamp(0.0, 1.0);
+        let signal = primary - ridge * 0.40;
+        let threshold = 0.60 - mid_bias * 0.14 - mountain_bonus * 0.5;
+        if signal > threshold {
+            return Block::CopperOre;
+        }
+    }
+
+    // Coal veins: broad, shallow-to-mid.
+    if wy <= 132 {
+        let primary = ore_coal.get([vx / 24.0 - 9.0, wyf / 16.0, vz / 24.0 + 21.0]);
+        let ridge = ore_warp.get([vx / 9.0 + 33.0, wyf / 9.0 + 7.0, vz / 9.0 - 15.0]).abs();
+        let signal = primary - ridge * 0.36;
+        let deep_bias = (1.0 - (wyf / 132.0)).clamp(0.0, 1.0);
+        let threshold = 0.58 - deep_bias * 0.10 - mountain_bonus;
+        if signal > threshold {
+            return Block::CoalOre;
+        }
+    }
+
+    // Sparse fallback so strata are never fully empty.
     let h = hash3(seed ^ 0xB529_7A4D, wx, wy, wz);
     let r = (h as f64) / (u32::MAX as f64);
-
-    let mountain_bonus = if biome::is_mountain(biome) { 1.20 } else { 1.0 };
-
-    if wy <= 26 && r < 0.016 * mountain_bonus {
+    if wy <= 48 && r < 0.0022 {
         return Block::IronOre;
     }
-    if wy <= 46 && r < 0.020 {
+    if wy <= 72 && r < 0.0026 {
         return Block::CopperOre;
     }
-    if wy <= 84 && r < 0.030 * mountain_bonus {
+    if wy <= 110 && r < 0.0031 {
         return Block::CoalOre;
     }
 

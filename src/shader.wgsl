@@ -130,6 +130,7 @@ fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
     let night = 1.0 - day;
     let twilight = 1.0 - smoothstep(0.02, 0.42, abs(sun_height));
 
+    let ao = clamp(length(in.normal), 0.45, 1.0);
     let n = normalize(in.normal);
     let shadow = trace_shadow_stub(in.world_pos + n * 0.05, sun_dir);
     let moon_dir = normalize(vec3<f32>(-cos(sun_angle), max(-sun_height, 0.0), -0.35));
@@ -138,7 +139,7 @@ fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
     let h = textureSample(parallax_tex, block_sampler, in.uv, i32(in.tex_idx)).r;
     let grazing = 1.0 - abs(dot(view_to_cam, n));
     let parallax_amount = (h - 0.5) * max(cam.parallax.x, 0.0) * (0.2 + grazing * 0.8);
-    let uv = clamp(in.uv + face_uv_view_dir(view_to_cam, n) * parallax_amount, vec2<f32>(0.001), vec2<f32>(0.999));
+    let uv = in.uv + face_uv_view_dir(view_to_cam, n) * parallax_amount;
 
     let sampled = textureSample(block_tex, block_sampler, uv, i32(in.tex_idx));
     if sampled.a < 0.1 {
@@ -162,7 +163,7 @@ fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
         * mix(1.0, 0.74, underground);
     let sun_scalar = (0.28 + 0.86 * pow(ndl, 1.22)) * day * shadow;
     let moon_scalar = (0.02 + 0.10 * pow(nml, 1.35)) * night * 0.58;
-    let light_scalar = clamp(face_light * (ambient_scalar + sun_scalar + moon_scalar) + sky_fill, 0.035, 1.65);
+    let light_scalar = clamp((face_light * (ambient_scalar + sun_scalar + moon_scalar) + sky_fill) * ao, 0.035, 1.65);
 
     var sky_color = mix(vec3<f32>(0.015, 0.025, 0.060), vec3<f32>(0.56, 0.80, 1.00), day);
     sky_color = mix(sky_color, vec3<f32>(1.00, 0.56, 0.26), twilight * 0.45);

@@ -16,11 +16,12 @@
     { "key": "farmland_dry", "id": 13, "break_seconds": 1.0, "texture": "blocks/terrain/dirt.png", "multipliers": { "default": 1.0 } },
     { "key": "farmland_wet", "id": 14, "break_seconds": 1.0, "texture": "blocks/terrain/dirt.png", "multipliers": { "default": 1.0 } },
     { "key": "cave_air", "id": 15, "break_seconds": 0.0, "multipliers": { "default": 1.0 } },
-    { "key": "workbench", "id": 16, "break_seconds": 3.0, "texture": "blocks/workbench/workbench_front.png", "multipliers": { "default": 1.0 } },
+    { "key": "workbench", "id": 16, "break_seconds": 3.0, "texture": "blocks/starter_blocks/workbench/workbench1.png", "multipliers": { "default": 1.0 } },
     { "key": "wood", "id": 17, "break_seconds": 3.0, "texture": "blocks/wood/planks.png", "multipliers": { "default": 1.0 } },
     { "key": "stick", "id": 18, "break_seconds": 0.0, "texture": "items/misc/stick.png", "multipliers": { "default": 1.0 } },
-    { "key": "furnace", "id": 19, "break_seconds": 2.2, "texture": "blocks/starter_blocks/furnace_face.png", "multipliers": { "default": 1.0 } },
+    { "key": "furnace", "id": 19, "break_seconds": 2.2, "texture": "blocks/starter_blocks/furnace/furnace_face.png", "multipliers": { "default": 1.0 } },
     { "key": "coal", "id": 20, "break_seconds": 0.0, "texture": "items/misc/coal.png", "multipliers": { "default": 1.0 } },
+    { "key": "iron_ingot", "id": 22, "break_seconds": 0.0, "texture": "items/ingots/iron_ingot.png", "multipliers": { "default": 1.0 } },
 
     {
       "key": "wooden_pickaxe",
@@ -82,6 +83,7 @@
     {
       "key": "stone_sword",
       "id": 1006,
+      "durability": 320,
       "texture": "items/sword/stone_sword.png",
       "multipliers": {
         "default": 1.0
@@ -90,6 +92,7 @@
     {
       "key": "iron_sword",
       "id": 1007,
+      "durability": 620,
       "texture": "items/sword/iron_sword.png",
       "multipliers": {
         "default": 1.0
@@ -114,17 +117,29 @@
     {
       "key": "stone_pickaxe",
       "id": 1010,
+      "durability": 320,
       "texture": "items/pickaxe/stone_pickaxe.png",
       "multipliers": {
-        "default": 1.0
+        "default": 1.0,
+        "stone": 3.1,
+        "coal_ore": 3.1,
+        "iron_ore": 3.1,
+        "copper_ore": 3.1,
+        "furnace": 3.1
       }
     },
     {
       "key": "iron_pickaxe",
       "id": 1011,
+      "durability": 620,
       "texture": "items/pickaxe/iron_pickaxe.png",
       "multipliers": {
-        "default": 1.0
+        "default": 1.0,
+        "stone": 4.2,
+        "coal_ore": 4.2,
+        "iron_ore": 4.2,
+        "copper_ore": 4.2,
+        "furnace": 4.2
       }
     },
     {
@@ -146,7 +161,36 @@
     {
       "key": "stone_axe",
       "id": 1014,
+      "durability": 320,
       "texture": "items/axe/stone_axe.png",
+      "multipliers": {
+        "default": 1.0,
+        "log": 2.8,
+        "log_bottom": 2.8,
+        "workbench": 2.8,
+        "leaves": 2.8,
+        "wood": 2.8
+      }
+    },
+    {
+      "key": "stone_shovel",
+      "id": 1018,
+      "durability": 320,
+      "texture": "items/shovel/stone_shovel.png",
+      "multipliers": {
+        "default": 1.0,
+        "dirt": 2.6,
+        "grass": 2.6,
+        "farmland_dry": 2.6,
+        "farmland_wet": 2.6,
+        "sand": 2.6
+      }
+    },
+    {
+      "key": "stone_hoe",
+      "id": 1019,
+      "durability": 320,
+      "texture": "items/hoe/stone_hoe.png",
       "multipliers": {
         "default": 1.0
       }
@@ -154,7 +198,36 @@
     {
       "key": "iron_axe",
       "id": 1015,
+      "durability": 620,
       "texture": "items/axe/iron_axe.png",
+      "multipliers": {
+        "default": 1.0,
+        "log": 3.6,
+        "log_bottom": 3.6,
+        "workbench": 3.6,
+        "leaves": 3.6,
+        "wood": 3.6
+      }
+    },
+    {
+      "key": "iron_shovel",
+      "id": 1020,
+      "durability": 620,
+      "texture": "items/shovel/iron_shovel.png",
+      "multipliers": {
+        "default": 1.0,
+        "dirt": 3.3,
+        "grass": 3.3,
+        "farmland_dry": 3.3,
+        "farmland_wet": 3.3,
+        "sand": 3.3
+      }
+    },
+    {
+      "key": "iron_hoe",
+      "id": 1021,
+      "durability": 620,
+      "texture": "items/hoe/iron_hoe.png",
       "multipliers": {
         "default": 1.0
       }
@@ -169,7 +242,8 @@
     },
     {
       "key": "torch",
-      "id": 1017,
+      "id": 21,
+      "break_seconds": 0.2,
       "texture": "items/misc/torch.png",
       "multipliers": {
         "default": 1.0

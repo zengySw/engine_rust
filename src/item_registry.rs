@@ -9,6 +9,8 @@ use crate::inventory::WoodenTool;
 use crate::world::block::Block;
 
 const DEFAULT_WOOD_TOOL_DURABILITY: u16 = 170;
+const DEFAULT_STONE_TOOL_DURABILITY: u16 = 320;
+const DEFAULT_IRON_TOOL_DURABILITY: u16 = 620;
 const FALLBACK_TOOL_ID_BASE: u16 = 1000;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -138,7 +140,7 @@ impl ItemRegistry {
         self.by_key
             .get(tool_item_key(tool))
             .and_then(|e| e.durability)
-            .unwrap_or(DEFAULT_WOOD_TOOL_DURABILITY)
+            .unwrap_or_else(|| default_tool_durability(tool))
     }
 
     fn tool_break_multiplier(&self, tool: WoodenTool, block: Block) -> f32 {
@@ -237,12 +239,29 @@ fn tool_item_key(tool: WoodenTool) -> &'static str {
         WoodenTool::Axe => "wooden_axe",
         WoodenTool::Shovel => "wooden_shovel",
         WoodenTool::Hoe => "wooden_hoe",
+        WoodenTool::Sword => "wood_sword",
+        WoodenTool::StonePickaxe => "stone_pickaxe",
+        WoodenTool::StoneAxe => "stone_axe",
+        WoodenTool::StoneShovel => "stone_shovel",
+        WoodenTool::StoneHoe => "stone_hoe",
+        WoodenTool::StoneSword => "stone_sword",
+        WoodenTool::IronPickaxe => "iron_pickaxe",
+        WoodenTool::IronAxe => "iron_axe",
+        WoodenTool::IronShovel => "iron_shovel",
+        WoodenTool::IronHoe => "iron_hoe",
+        WoodenTool::IronSword => "iron_sword",
     }
 }
 
 fn default_block_break_seconds(block: Block) -> f32 {
     match block {
-        Block::Air | Block::CaveAir | Block::Water | Block::Stick | Block::Coal => 0.0,
+        Block::Air
+        | Block::CaveAir
+        | Block::Water
+        | Block::Stick
+        | Block::Coal
+        | Block::IronIngot => 0.0,
+        Block::Torch => 0.2,
         Block::Bedrock => f32::INFINITY,
         Block::Dirt
         | Block::Grass
@@ -272,6 +291,59 @@ fn default_tool_break_multiplier(tool: WoodenTool, block: Block) -> f32 {
             _ => 1.0,
         },
         WoodenTool::Hoe => 1.0,
+        WoodenTool::Sword => 1.0,
+        WoodenTool::StonePickaxe => match block {
+            Block::Stone | Block::CoalOre | Block::IronOre | Block::CopperOre | Block::Furnace => 3.1,
+            _ => 1.0,
+        },
+        WoodenTool::StoneAxe => match block {
+            Block::Log | Block::LogBottom | Block::Leaves | Block::Workbench | Block::Wood => 2.8,
+            _ => 1.0,
+        },
+        WoodenTool::StoneShovel => match block {
+            Block::Dirt | Block::Grass | Block::FarmlandDry | Block::FarmlandWet | Block::Sand => {
+                2.6
+            }
+            _ => 1.0,
+        },
+        WoodenTool::StoneHoe => 1.0,
+        WoodenTool::StoneSword => 1.0,
+        WoodenTool::IronPickaxe => match block {
+            Block::Stone | Block::CoalOre | Block::IronOre | Block::CopperOre | Block::Furnace => 4.2,
+            _ => 1.0,
+        },
+        WoodenTool::IronAxe => match block {
+            Block::Log | Block::LogBottom | Block::Leaves | Block::Workbench | Block::Wood => 3.6,
+            _ => 1.0,
+        },
+        WoodenTool::IronShovel => match block {
+            Block::Dirt | Block::Grass | Block::FarmlandDry | Block::FarmlandWet | Block::Sand => {
+                3.3
+            }
+            _ => 1.0,
+        },
+        WoodenTool::IronHoe => 1.0,
+        WoodenTool::IronSword => 1.0,
+    }
+}
+
+fn default_tool_durability(tool: WoodenTool) -> u16 {
+    match tool {
+        WoodenTool::Pickaxe
+        | WoodenTool::Axe
+        | WoodenTool::Shovel
+        | WoodenTool::Hoe
+        | WoodenTool::Sword => DEFAULT_WOOD_TOOL_DURABILITY,
+        WoodenTool::StonePickaxe
+        | WoodenTool::StoneAxe
+        | WoodenTool::StoneShovel
+        | WoodenTool::StoneHoe
+        | WoodenTool::StoneSword => DEFAULT_STONE_TOOL_DURABILITY,
+        WoodenTool::IronPickaxe
+        | WoodenTool::IronAxe
+        | WoodenTool::IronShovel
+        | WoodenTool::IronHoe
+        | WoodenTool::IronSword => DEFAULT_IRON_TOOL_DURABILITY,
     }
 }
 
@@ -299,6 +371,8 @@ fn default_entries() -> Vec<(String, ItemEntry)> {
         (Block::Stick, 18),
         (Block::Furnace, 19),
         (Block::Coal, 20),
+        (Block::Torch, 21),
+        (Block::IronIngot, 22),
     ];
     for (block, id) in blocks {
         out.push((
@@ -335,6 +409,72 @@ fn default_entries() -> Vec<(String, ItemEntry)> {
         "wooden_hoe",
         1004,
         DEFAULT_WOOD_TOOL_DURABILITY,
+        &[("default", 1.0)],
+    ));
+    out.push(tool_entry(
+        "wood_sword",
+        1005,
+        DEFAULT_WOOD_TOOL_DURABILITY,
+        &[("default", 1.0)],
+    ));
+    out.push(tool_entry(
+        "stone_pickaxe",
+        1010,
+        DEFAULT_STONE_TOOL_DURABILITY,
+        &[("default", 1.0), ("stone", 3.1), ("coal_ore", 3.1), ("iron_ore", 3.1), ("copper_ore", 3.1)],
+    ));
+    out.push(tool_entry(
+        "stone_axe",
+        1014,
+        DEFAULT_STONE_TOOL_DURABILITY,
+        &[("default", 1.0), ("log", 2.8), ("log_bottom", 2.8), ("leaves", 2.8), ("workbench", 2.8), ("wood", 2.8)],
+    ));
+    out.push(tool_entry(
+        "stone_shovel",
+        1018,
+        DEFAULT_STONE_TOOL_DURABILITY,
+        &[("default", 1.0), ("dirt", 2.6), ("grass", 2.6), ("farmland_dry", 2.6), ("farmland_wet", 2.6), ("sand", 2.6)],
+    ));
+    out.push(tool_entry(
+        "stone_hoe",
+        1019,
+        DEFAULT_STONE_TOOL_DURABILITY,
+        &[("default", 1.0)],
+    ));
+    out.push(tool_entry(
+        "stone_sword",
+        1006,
+        DEFAULT_STONE_TOOL_DURABILITY,
+        &[("default", 1.0)],
+    ));
+    out.push(tool_entry(
+        "iron_pickaxe",
+        1011,
+        DEFAULT_IRON_TOOL_DURABILITY,
+        &[("default", 1.0), ("stone", 4.2), ("coal_ore", 4.2), ("iron_ore", 4.2), ("copper_ore", 4.2)],
+    ));
+    out.push(tool_entry(
+        "iron_axe",
+        1015,
+        DEFAULT_IRON_TOOL_DURABILITY,
+        &[("default", 1.0), ("log", 3.6), ("log_bottom", 3.6), ("leaves", 3.6), ("workbench", 3.6), ("wood", 3.6)],
+    ));
+    out.push(tool_entry(
+        "iron_shovel",
+        1020,
+        DEFAULT_IRON_TOOL_DURABILITY,
+        &[("default", 1.0), ("dirt", 3.3), ("grass", 3.3), ("farmland_dry", 3.3), ("farmland_wet", 3.3), ("sand", 3.3)],
+    ));
+    out.push(tool_entry(
+        "iron_hoe",
+        1021,
+        DEFAULT_IRON_TOOL_DURABILITY,
+        &[("default", 1.0)],
+    ));
+    out.push(tool_entry(
+        "iron_sword",
+        1007,
+        DEFAULT_IRON_TOOL_DURABILITY,
         &[("default", 1.0)],
     ));
 

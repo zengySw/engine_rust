@@ -475,7 +475,13 @@ fn random_index(rng_state: &mut u32, len: usize) -> usize {
 
 fn break_sound_families(block: Block) -> &'static [&'static str] {
     match block {
-        Block::Air | Block::CaveAir | Block::Water | Block::Stick | Block::Coal => &[],
+        Block::Air
+        | Block::CaveAir
+        | Block::Water
+        | Block::Stick
+        | Block::Coal
+        | Block::IronIngot => &[],
+        Block::Torch => &["wood", "grass", "gravel", "break"],
         Block::Grass => &["grass", "gravel", "sand", "stone", "break"],
         Block::Dirt | Block::FarmlandDry | Block::FarmlandWet => &["gravel", "grass", "sand", "stone", "break"],
         Block::Sand => &["sand", "gravel", "grass", "stone", "break"],
@@ -494,7 +500,13 @@ fn break_sound_families(block: Block) -> &'static [&'static str] {
 
 fn walk_sound_families(block: Block) -> &'static [&'static str] {
     match block {
-        Block::Air | Block::CaveAir | Block::Water | Block::Stick | Block::Coal => &[],
+        Block::Air
+        | Block::CaveAir
+        | Block::Water
+        | Block::Stick
+        | Block::Coal
+        | Block::IronIngot => &[],
+        Block::Torch => &["wood", "grass", "stone", "sand"],
         Block::Grass | Block::Leaves => &["grass", "gravel", "sand", "stone"],
         Block::Dirt | Block::FarmlandDry | Block::FarmlandWet => &["gravel", "grass", "sand", "stone"],
         Block::Sand => &["sand", "gravel", "stone", "grass"],

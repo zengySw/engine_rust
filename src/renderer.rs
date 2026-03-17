@@ -12,6 +12,7 @@ use zip::ZipArchive;
 use crate::args::Args;
 use crate::camera::Camera;
 use crate::culling::{Frustum, cull_chunks_parallel};
+use crate::inventory::WoodenTool;
 use crate::raytracing::RayTracingRenderer;
 use crate::world::block::Block;
 use crate::world::chunk::Vertex;
@@ -118,8 +119,10 @@ struct CameraUniform {
 }
 
 struct ChunkBuffer {
-    buf:   wgpu::Buffer,
-    count: u32,
+    vbuf: wgpu::Buffer,
+    vcount: u32,
+    ibuf: Option<wgpu::Buffer>,
+    icount: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -144,7 +147,7 @@ pub struct FirstPersonHandVisual {
     pub swing: f32,
     pub action_phase_rad: f32,
     pub action_strength: f32,
-    pub holding_hoe: bool,
+    pub held_tool: Option<WoodenTool>,
     pub held_block: Option<Block>,
 }
 
@@ -156,7 +159,7 @@ pub struct PlayerVisual {
     pub swing: f32,
     pub action_phase_rad: f32,
     pub action_strength: f32,
-    pub holding_hoe: bool,
+    pub held_tool: Option<WoodenTool>,
     pub held_block: Option<Block>,
 }
 
@@ -414,14 +417,22 @@ impl Renderer {
                 dirty_keys |= self.chunk_buffers.remove(&key).is_some();
                 continue;
             }
-            let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label:    Some("chunk_vb"),
-                contents: bytemuck::cast_slice(&mesh.verts),
-                usage:    wgpu::BufferUsages::VERTEX,
+            let (verts, indices) = compact_triangles_to_indexed_quads(&mesh.verts);
+            let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chunk_vb"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let ibuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chunk_ib"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
             });
             self.chunk_buffers.insert(key, ChunkBuffer {
-                buf,
-                count: mesh.verts.len() as u32,
+                vbuf,
+                vcount: verts.len() as u32,
+                ibuf: Some(ibuf),
+                icount: indices.len() as u32,
             });
             dirty_keys = true;
         }
@@ -448,8 +459,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         self.drop_buffer = Some(ChunkBuffer {
-            buf,
-            count: verts.len() as u32,
+            vbuf: buf,
+            vcount: verts.len() as u32,
+            ibuf: None,
+            icount: 0,
         });
     }
 
@@ -471,8 +484,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         self.rain_buffer = Some(ChunkBuffer {
-            buf,
-            count: verts.len() as u32,
+            vbuf: buf,
+            vcount: verts.len() as u32,
+            ibuf: None,
+            icount: 0,
         });
     }
 
@@ -494,8 +509,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         self.hand_buffer = Some(ChunkBuffer {
-            buf,
-            count: verts.len() as u32,
+            vbuf: buf,
+            vcount: verts.len() as u32,
+            ibuf: None,
+            icount: 0,
         });
     }
 
@@ -517,8 +534,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         self.player_buffer = Some(ChunkBuffer {
-            buf,
-            count: verts.len() as u32,
+            vbuf: buf,
+            vcount: verts.len() as u32,
+            ibuf: None,
+            icount: 0,
         });
     }
 
@@ -540,8 +559,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         self.break_overlay_buffer = Some(ChunkBuffer {
-            buf,
-            count: verts.len() as u32,
+            vbuf: buf,
+            vcount: verts.len() as u32,
+            ibuf: None,
+            icount: 0,
         });
     }
 
@@ -563,8 +584,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         self.block_outline_buffer = Some(ChunkBuffer {
-            buf,
-            count: verts.len() as u32,
+            vbuf: buf,
+            vcount: verts.len() as u32,
+            ibuf: None,
+            icount: 0,
         });
     }
 
@@ -699,39 +722,32 @@ impl Renderer {
 
             for &key in &self.visible_keys {
                 if let Some(cb) = self.chunk_buffers.get(&key) {
-                    pass.set_vertex_buffer(0, cb.buf.slice(..));
-                    pass.draw(0..cb.count, 0..1);
+                    draw_chunk_buffer(&mut pass, cb);
                 }
             }
 
             if let Some(drop_buf) = self.drop_buffer.as_ref() {
-                pass.set_vertex_buffer(0, drop_buf.buf.slice(..));
-                pass.draw(0..drop_buf.count, 0..1);
+                draw_chunk_buffer(&mut pass, drop_buf);
             }
 
             if let Some(rain_buf) = self.rain_buffer.as_ref() {
-                pass.set_vertex_buffer(0, rain_buf.buf.slice(..));
-                pass.draw(0..rain_buf.count, 0..1);
+                draw_chunk_buffer(&mut pass, rain_buf);
             }
 
             if let Some(player_buf) = self.player_buffer.as_ref() {
-                pass.set_vertex_buffer(0, player_buf.buf.slice(..));
-                pass.draw(0..player_buf.count, 0..1);
+                draw_chunk_buffer(&mut pass, player_buf);
             }
 
             if let Some(overlay_buf) = self.break_overlay_buffer.as_ref() {
-                pass.set_vertex_buffer(0, overlay_buf.buf.slice(..));
-                pass.draw(0..overlay_buf.count, 0..1);
+                draw_chunk_buffer(&mut pass, overlay_buf);
             }
 
             if let Some(outline_buf) = self.block_outline_buffer.as_ref() {
-                pass.set_vertex_buffer(0, outline_buf.buf.slice(..));
-                pass.draw(0..outline_buf.count, 0..1);
+                draw_chunk_buffer(&mut pass, outline_buf);
             }
 
             if let Some(hand_buf) = self.hand_buffer.as_ref() {
-                pass.set_vertex_buffer(0, hand_buf.buf.slice(..));
-                pass.draw(0..hand_buf.count, 0..1);
+                draw_chunk_buffer(&mut pass, hand_buf);
             }
         }
 
@@ -826,6 +842,49 @@ impl Renderer {
     }
     #[allow(dead_code)]
     pub fn chunk_count(&self) -> usize { self.chunk_buffers.len() }
+}
+
+fn draw_chunk_buffer<'a>(pass: &mut wgpu::RenderPass<'a>, cb: &'a ChunkBuffer) {
+    pass.set_vertex_buffer(0, cb.vbuf.slice(..));
+    if let Some(ibuf) = cb.ibuf.as_ref() {
+        pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..cb.icount, 0, 0..1);
+    } else {
+        pass.draw(0..cb.vcount, 0..1);
+    }
+}
+
+fn compact_triangles_to_indexed_quads(verts: &[Vertex]) -> (Vec<Vertex>, Vec<u32>) {
+    if verts.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    if verts.len() % 6 != 0 {
+        let fallback_indices = (0..verts.len() as u32).collect::<Vec<_>>();
+        return (verts.to_vec(), fallback_indices);
+    }
+
+    let quad_count = verts.len() / 6;
+    let mut out_verts = Vec::with_capacity(quad_count * 4);
+    let mut out_indices = Vec::with_capacity(quad_count * 6);
+
+    for q in 0..quad_count {
+        let base_tri = q * 6;
+        let base_vtx = (q * 4) as u32;
+        out_verts.push(verts[base_tri]);
+        out_verts.push(verts[base_tri + 1]);
+        out_verts.push(verts[base_tri + 2]);
+        out_verts.push(verts[base_tri + 5]);
+        out_indices.extend_from_slice(&[
+            base_vtx,
+            base_vtx + 1,
+            base_vtx + 2,
+            base_vtx,
+            base_vtx + 2,
+            base_vtx + 3,
+        ]);
+    }
+
+    (out_verts, out_indices)
 }
 
 fn build_drop_vertices(drops: &[DroppedBlockVisual]) -> Vec<Vertex> {
@@ -1003,7 +1062,7 @@ fn build_first_person_hand_vertices(
         glam::Vec3::new(0.0, -0.18, 0.0),
     );
 
-    if hand.holding_hoe {
+    if hand.held_tool.is_some_and(|tool| tool.is_hoe()) {
         let hoe_local = rot * glam::Vec3::new(0.05, -0.34, 0.08);
         let hoe_anchor = anchor
             + right * hoe_local.x
@@ -1022,6 +1081,27 @@ fn build_first_person_hand_vertices(
             forward,
             hoe_anchor,
             hoe_rot,
+            tex_idx,
+        );
+    } else if hand.held_tool.is_some_and(|tool| tool.is_sword()) {
+        let sword_local = rot * glam::Vec3::new(0.05, -0.33, 0.07);
+        let sword_anchor = anchor
+            + right * sword_local.x
+            + up * sword_local.y
+            + forward * sword_local.z;
+        let sword_rot = rot
+            * glam::Quat::from_rotation_x(-1.06)
+            * glam::Quat::from_rotation_y(0.10)
+            * glam::Quat::from_rotation_z(0.04);
+        append_sword_model(
+            &mut verts,
+            &FACES,
+            &UVS,
+            right,
+            up,
+            forward,
+            sword_anchor,
+            sword_rot,
             tex_idx,
         );
     } else if let Some(block) = hand.held_block {
@@ -1179,7 +1259,7 @@ fn build_player_vertices(player: PlayerVisual, hand_tex_idx: u32) -> Vec<Vertex>
         glam::Vec3::new(0.0, -0.27, 0.0),
     );
 
-    if player.holding_hoe {
+    if player.held_tool.is_some_and(|tool| tool.is_hoe()) {
         let hold_local = right_arm_rot * glam::Vec3::new(0.04, -0.50, 0.04);
         let hold_anchor = right_arm_anchor
             + right * hold_local.x
@@ -1190,6 +1270,27 @@ fn build_player_vertices(player: PlayerVisual, hand_tex_idx: u32) -> Vec<Vertex>
             * glam::Quat::from_rotation_y(0.14)
             * glam::Quat::from_rotation_z(0.10);
         append_hoe_model(
+            &mut verts,
+            &FACES,
+            &UVS,
+            right,
+            up,
+            forward,
+            hold_anchor,
+            hold_rot,
+            hand_tex_idx,
+        );
+    } else if player.held_tool.is_some_and(|tool| tool.is_sword()) {
+        let hold_local = right_arm_rot * glam::Vec3::new(0.04, -0.51, 0.03);
+        let hold_anchor = right_arm_anchor
+            + right * hold_local.x
+            + up * hold_local.y
+            + forward * hold_local.z;
+        let hold_rot = right_arm_rot
+            * glam::Quat::from_rotation_x(-1.08)
+            * glam::Quat::from_rotation_y(0.08)
+            * glam::Quat::from_rotation_z(0.05);
+        append_sword_model(
             &mut verts,
             &FACES,
             &UVS,
@@ -1313,6 +1414,60 @@ fn append_hoe_model(
         tex_idx,
         glam::Vec3::new(0.18, 0.06, 0.06),
         glam::Vec3::new(0.07, 0.04, 0.0),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_sword_model(
+    verts: &mut Vec<Vertex>,
+    faces: &[([f32; 3], [[f32; 3]; 4]); 6],
+    uvs: &[[f32; 2]; 4],
+    right: glam::Vec3,
+    up: glam::Vec3,
+    forward: glam::Vec3,
+    anchor: glam::Vec3,
+    rot: glam::Quat,
+    tex_idx: u32,
+) {
+    // Simplified sword: handle + guard + blade.
+    append_box_faces(
+        verts,
+        faces,
+        uvs,
+        right,
+        up,
+        forward,
+        anchor,
+        rot,
+        tex_idx,
+        glam::Vec3::new(0.040, 0.24, 0.040),
+        glam::Vec3::new(0.0, -0.22, 0.0),
+    );
+    append_box_faces(
+        verts,
+        faces,
+        uvs,
+        right,
+        up,
+        forward,
+        anchor,
+        rot,
+        tex_idx,
+        glam::Vec3::new(0.18, 0.03, 0.05),
+        glam::Vec3::new(0.0, -0.08, 0.0),
+    );
+    append_box_faces(
+        verts,
+        faces,
+        uvs,
+        right,
+        up,
+        forward,
+        anchor,
+        rot,
+        tex_idx,
+        glam::Vec3::new(0.07, 0.52, 0.03),
+        glam::Vec3::new(0.0, 0.20, 0.0),
     );
 }
 
@@ -1576,10 +1731,14 @@ fn drop_face_texture(block: Block, face_idx: usize) -> u32 {
             if face_idx == 2 || face_idx == 3 { Block::LogBottom.texture_index() }
             else { Block::Log.texture_index() }
         }
+        Block::Wood => {
+            if face_idx == 2 || face_idx == 3 { Block::LogBottom.texture_index() }
+            else { Block::Wood.texture_index() }
+        }
         Block::Workbench => {
-            if face_idx == 2 {
+            if face_idx == 2 || face_idx == 3 {
                 WORKBENCH_TOP_TEX_IDX
-            } else if face_idx == 4 {
+            } else if face_idx == 4 || face_idx == 5 {
                 WORKBENCH_FRONT_TEX_IDX
             } else {
                 Block::Workbench.texture_index()
@@ -1640,7 +1799,7 @@ fn create_block_textures(
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
 ) -> BlockTextures {
-    const TEX_NAMES: [&str; 25] = [
+    const TEX_NAMES: [&str; 27] = [
         "air",
         "grass",
         "dirt",
@@ -1666,6 +1825,8 @@ fn create_block_textures(
         "furnace_top",
         "furnace_front",
         "coal",
+        "torch",
+        "iron_ingot",
     ];
 
     let pack = load_active_resource_pack();
@@ -1828,9 +1989,10 @@ fn create_block_textures(
         mag_filter: wgpu::FilterMode::Nearest,
         min_filter: wgpu::FilterMode::Nearest,
         mipmap_filter: wgpu::FilterMode::Nearest,
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        // Repeat is required for merged greedy quads with tiled UV (>1.0).
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
         ..Default::default()
     });
 
@@ -2192,6 +2354,8 @@ fn texture_aliases(name: &str) -> Vec<&str> {
         "workbench_top" => vec!["workbench_top", "crafting_table_top", "workbench"],
         "workbench_front" => vec![
             "workbench_front",
+            "workbench1",
+            "workbench_front1",
             "crafting_table_front",
             "workbench",
             "workbench_side",
@@ -2229,6 +2393,8 @@ fn texture_aliases(name: &str) -> Vec<&str> {
         "iron_ore" => vec!["iron_ore", "iron_ore_stone"],
         "copper_ore" => vec!["copper_ore", "copper_ore_stone"],
         "coal" => vec!["coal", "charcoal", "coal_item"],
+        "torch" => vec!["torch", "wall_torch"],
+        "iron_ingot" => vec!["iron_ingot", "iron", "iron_nugget"],
         _ => vec![name],
     }
 }
@@ -2327,49 +2493,53 @@ fn find_local_texture_path(roots: &[PathBuf], folders: &[&str], aliases: &[&str]
                         return Some(path);
                     }
                 }
-            }
-
-            // Allow arbitrary nested folders like blocks/terrain/*.png or blocks/ore/*.png.
-            let mut stack = vec![base];
-            let mut matches: Vec<PathBuf> = Vec::new();
-            while let Some(dir) = stack.pop() {
-                let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|e| e.path())
-                    .collect();
-                entries.sort();
-                for path in entries {
-                    if path.is_dir() {
-                        stack.push(path);
-                        continue;
-                    }
-                    if !path.is_file() {
-                        continue;
-                    }
-                    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
-                        continue;
-                    };
-                    if !matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "avif") {
-                        continue;
-                    }
-                    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                        continue;
-                    };
-                    if aliases.iter().any(|a| stem.eq_ignore_ascii_case(a)) {
-                        matches.push(path);
-                    }
+                // Keep alias priority for nested folders too:
+                // try recursive search per alias in given order.
+                if let Some(path) = find_local_texture_recursive_alias(&base, alias) {
+                    return Some(path);
                 }
-            }
-            matches.sort();
-            if let Some(path) = matches.into_iter().next() {
-                return Some(path);
             }
         }
     }
     None
+}
+
+fn find_local_texture_recursive_alias(base: &Path, alias: &str) -> Option<PathBuf> {
+    let mut stack = vec![base.to_path_buf()];
+    let mut matches: Vec<PathBuf> = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "avif") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if stem.eq_ignore_ascii_case(alias) {
+                matches.push(path);
+            }
+        }
+    }
+    matches.sort();
+    matches.into_iter().next()
 }
 
 fn asset_roots() -> [PathBuf; 2] {
@@ -2419,7 +2589,24 @@ fn load_block_texture(name: &str, pack: Option<&ResourcePackData>) -> RgbaImage 
         match image::open(&path) {
             Ok(img) => return img.to_rgba8(),
             Err(err) => {
-                log::warn!("Failed to decode {:?}: {}", path, err);
+                // Some user textures are saved with a mismatched extension.
+                // Fallback to content-based format detection.
+                match std::fs::read(&path) {
+                    Ok(bytes) => match image::load_from_memory(&bytes) {
+                        Ok(img) => return img.to_rgba8(),
+                        Err(mem_err) => {
+                            log::warn!(
+                                "Failed to decode {:?}: {} (content decode failed: {})",
+                                path,
+                                err,
+                                mem_err
+                            );
+                        }
+                    },
+                    Err(read_err) => {
+                        log::warn!("Failed to decode {:?}: {} (read failed: {})", path, err, read_err);
+                    }
+                }
             }
         }
     }
@@ -2450,7 +2637,13 @@ fn load_parallax_texture(name: &str, pack: Option<&ResourcePackData>) -> Option<
 
     let roots = asset_roots();
     let path = find_local_texture_path(&roots, &["parallax"], &aliases)?;
-    image::open(path).ok().map(|img| img.to_luma8())
+    match image::open(&path) {
+        Ok(img) => Some(img.to_luma8()),
+        Err(_) => {
+            let bytes = std::fs::read(&path).ok()?;
+            image::load_from_memory(&bytes).ok().map(|img| img.to_luma8())
+        }
+    }
 }
 
 fn fallback_block_texture(name: &str) -> RgbaImage {
@@ -2480,6 +2673,8 @@ fn fallback_block_texture(name: &str) -> RgbaImage {
         "iron_ore" => [184, 135, 98, 255],
         "copper_ore" => [168, 100, 66, 255],
         "coal" => [48, 48, 48, 255],
+        "torch" => [238, 186, 86, 255],
+        "iron_ingot" => [206, 206, 214, 255],
         _ => [255, 0, 255, 255],
     };
     RgbaImage::from_pixel(16, 16, Rgba(color))

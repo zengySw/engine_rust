@@ -16,6 +16,10 @@ const PLAYER_CRAFT_SLOTS: usize = PLAYER_CRAFT_COLS * PLAYER_CRAFT_ROWS;
 const WORKBENCH_CRAFT_SLOTS: usize = WORKBENCH_CRAFT_COLS * WORKBENCH_CRAFT_ROWS;
 const MAX_STACK_SIZE: u16 = 64;
 const FURNACE_SMELT_SECONDS: f32 = 1.0;
+const CRAFT_SECTION_GAP: f32 = 8.0;
+const CRAFT_RESULT_GAP: f32 = 4.0;
+const CRAFT_ARROW_SIZE: f32 = 30.0;
+const FURNACE_COLUMN_GAP: f32 = 8.0;
 
 #[derive(Clone, Copy)]
 pub struct Slot {
@@ -92,12 +96,34 @@ enum InventoryMode {
     Furnace,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DragDistributeButton {
+    Primary,
+    Secondary,
+}
+
+struct DragDistributeState {
+    button: DragDistributeButton,
+    touched_slots: Vec<SlotId>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WoodenTool {
     Pickaxe,
     Axe,
     Shovel,
     Hoe,
+    Sword,
+    StonePickaxe,
+    StoneAxe,
+    StoneShovel,
+    StoneHoe,
+    StoneSword,
+    IronPickaxe,
+    IronAxe,
+    IronShovel,
+    IronHoe,
+    IronSword,
 }
 
 impl WoodenTool {
@@ -107,6 +133,17 @@ impl WoodenTool {
             WoodenTool::Axe => 1,
             WoodenTool::Shovel => 2,
             WoodenTool::Hoe => 3,
+            WoodenTool::Sword => 4,
+            WoodenTool::StonePickaxe => 5,
+            WoodenTool::StoneAxe => 6,
+            WoodenTool::StoneShovel => 7,
+            WoodenTool::StoneHoe => 8,
+            WoodenTool::StoneSword => 9,
+            WoodenTool::IronPickaxe => 10,
+            WoodenTool::IronAxe => 11,
+            WoodenTool::IronShovel => 12,
+            WoodenTool::IronHoe => 13,
+            WoodenTool::IronSword => 14,
         }
     }
 
@@ -116,7 +153,26 @@ impl WoodenTool {
             WoodenTool::Axe => "Wooden Axe",
             WoodenTool::Shovel => "Wooden Shovel",
             WoodenTool::Hoe => "Wooden Hoe",
+            WoodenTool::Sword => "Wooden Sword",
+            WoodenTool::StonePickaxe => "Stone Pickaxe",
+            WoodenTool::StoneAxe => "Stone Axe",
+            WoodenTool::StoneShovel => "Stone Shovel",
+            WoodenTool::StoneHoe => "Stone Hoe",
+            WoodenTool::StoneSword => "Stone Sword",
+            WoodenTool::IronPickaxe => "Iron Pickaxe",
+            WoodenTool::IronAxe => "Iron Axe",
+            WoodenTool::IronShovel => "Iron Shovel",
+            WoodenTool::IronHoe => "Iron Hoe",
+            WoodenTool::IronSword => "Iron Sword",
         }
+    }
+
+    pub fn is_hoe(self) -> bool {
+        matches!(self, WoodenTool::Hoe | WoodenTool::StoneHoe | WoodenTool::IronHoe)
+    }
+
+    pub fn is_sword(self) -> bool {
+        matches!(self, WoodenTool::Sword | WoodenTool::StoneSword | WoodenTool::IronSword)
     }
 }
 
@@ -141,6 +197,8 @@ pub struct Inventory {
     texture_missing: HashSet<u8>,
     tool_texture_cache: HashMap<WoodenTool, egui::TextureHandle>,
     tool_texture_missing: HashSet<WoodenTool>,
+    tool_durability_values: [u16; 15],
+    drag_distribute: Option<DragDistributeState>,
 }
 
 impl Inventory {
@@ -166,7 +224,13 @@ impl Inventory {
             texture_missing: HashSet::new(),
             tool_texture_cache: HashMap::new(),
             tool_texture_missing: HashSet::new(),
+            tool_durability_values: [0; 15],
+            drag_distribute: None,
         }
+    }
+
+    pub fn set_tool_durability_values(&mut self, values: [u16; 15]) {
+        self.tool_durability_values = values;
     }
 
     pub fn toggle(&mut self) {
@@ -196,6 +260,7 @@ impl Inventory {
         self.return_temporary_slots_to_storage();
         self.open = false;
         self.mode = InventoryMode::Player;
+        self.drag_distribute = None;
     }
 
     pub fn selected_block(&self) -> Option<Block> {
@@ -288,6 +353,59 @@ impl Inventory {
             }
         }
         false
+    }
+
+    #[allow(dead_code)]
+    pub fn sort_storage(&mut self) {
+        let mut blocks: Vec<(Block, u16)> = Vec::new();
+        let mut tools: Vec<WoodenTool> = Vec::new();
+
+        for slot in self.hotbar.iter().chain(self.grid.iter()) {
+            if slot.is_empty() {
+                continue;
+            }
+            if let Some(tool) = slot.tool {
+                tools.push(tool);
+            } else {
+                if let Some((_, count)) = blocks.iter_mut().find(|(block, _)| *block == slot.block) {
+                    *count = count.saturating_add(slot.count);
+                } else {
+                    blocks.push((slot.block, slot.count));
+                }
+            }
+        }
+
+        for slot in self.hotbar.iter_mut().chain(self.grid.iter_mut()) {
+            slot.clear();
+        }
+
+        blocks.sort_by_key(|(block, _)| item_registry::block_item_id(*block));
+        tools.sort_by_key(|tool| tool.idx());
+
+        let mut packed: Vec<Slot> = Vec::new();
+        for (block, mut count) in blocks {
+            while count > 0 {
+                let chunk = count.min(MAX_STACK_SIZE);
+                packed.push(Slot::new(block, chunk));
+                count -= chunk;
+            }
+        }
+        for tool in tools {
+            packed.push(Slot::new_tool(tool));
+        }
+
+        for (idx, slot) in packed.into_iter().enumerate() {
+            if idx < HOTBAR_SLOTS {
+                self.hotbar[idx] = slot;
+            } else {
+                let grid_idx = idx - HOTBAR_SLOTS;
+                if grid_idx < GRID_SLOTS {
+                    self.grid[grid_idx] = slot;
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
     pub fn quick_craft(&mut self) -> Option<&'static str> {
@@ -505,10 +623,10 @@ impl Inventory {
         }
 
         let screen = ctx.screen_rect();
-        let slot_size = 28.0;
-        let spacing = 4.0;
-        let total_w = slot_size * HOTBAR_SLOTS as f32 + spacing * (HOTBAR_SLOTS as f32 - 1.0) + 20.0;
-        let total_h = slot_size + 20.0;
+        let slot_size = 34.0;
+        let spacing = 2.0;
+        let total_w = slot_size * HOTBAR_SLOTS as f32 + spacing * (HOTBAR_SLOTS as f32 - 1.0) + 16.0;
+        let total_h = slot_size + 16.0;
         let pos = egui::pos2(
             screen.center().x - total_w * 0.5,
             screen.bottom() - total_h - 12.0,
@@ -519,9 +637,9 @@ impl Inventory {
             .fixed_pos(pos)
             .show(ctx, |ui| {
                 let frame = egui::Frame::none()
-                    .fill(Color32::from_rgba_unmultiplied(30, 30, 30, 220))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(90, 90, 90)))
-                    .inner_margin(egui::Margin::same(10.0));
+                    .fill(Color32::from_rgba_unmultiplied(198, 198, 198, 220))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(56, 56, 56)))
+                    .inner_margin(egui::Margin::same(8.0));
 
                 frame.show(ui, |ui| {
                     let mut style = (**ui.style()).clone();
@@ -550,12 +668,12 @@ impl Inventory {
         let screen = ctx.screen_rect();
         let bg_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("inv_bg"));
         ctx.layer_painter(bg_layer)
-            .rect_filled(screen, 0.0, Color32::from_black_alpha(110));
+            .rect_filled(screen, 0.0, Color32::from_black_alpha(76));
 
         let (panel_size, title) = match self.mode {
-            InventoryMode::Workbench => (egui::vec2(500.0, 426.0), "Workbench"),
-            InventoryMode::Furnace => (egui::vec2(460.0, 398.0), "Furnace"),
-            InventoryMode::Player => (egui::vec2(420.0, 382.0), "Inventory"),
+            InventoryMode::Workbench => (egui::vec2(470.0, 458.0), "Crafting"),
+            InventoryMode::Furnace => (egui::vec2(452.0, 426.0), "Furnace"),
+            InventoryMode::Player => (egui::vec2(500.0, 510.0), "Inventory"),
         };
         let panel_rect = egui::Rect::from_center_size(screen.center(), panel_size);
 
@@ -566,92 +684,98 @@ impl Inventory {
                 ui.set_min_size(panel_size);
                 ui.set_max_size(panel_size);
                 let frame = egui::Frame::none()
-                    .fill(Color32::from_rgba_unmultiplied(30, 30, 30, 245))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(90, 90, 90)))
-                    .inner_margin(egui::Margin::same(16.0));
+                    .fill(Color32::from_rgba_unmultiplied(198, 198, 198, 248))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(52, 52, 52)))
+                    .inner_margin(egui::Margin::same(12.0));
 
                 frame.show(ui, |ui| {
                     let mut style = (**ui.style()).clone();
-                    style.spacing.item_spacing = egui::vec2(4.0, 4.0);
+                    style.spacing.item_spacing = egui::vec2(2.0, 2.0);
                     ui.set_style(style);
-                    ui.set_width(panel_size.x - 32.0);
-
-                    ui.vertical_centered(|ui| {
-                        ui.label(RichText::new(title).size(20.0).strong());
-                    });
-                    ui.add_space(8.0);
+                    ui.set_width(panel_size.x - 24.0);
 
                     if self.mode == InventoryMode::Furnace {
+                        ui.label(RichText::new(title).size(17.0).strong().color(Color32::from_rgb(52, 52, 52)));
+                        ui.add_space(6.0);
                         self.draw_furnace_panel(ui, ctx);
                     } else {
                         let (craft_cols, craft_rows) = self.craft_dims();
-                        let craft_slot = 30.0;
-                        ui.horizontal(|ui| {
+                        let craft_slot = 38.0;
+                        let craft_grid_h = craft_rows as f32 * craft_slot
+                            + (craft_rows.saturating_sub(1) as f32) * 2.0;
+                        ui.horizontal_top(|ui| {
+                            if self.mode == InventoryMode::Player {
+                                draw_player_preview_stub(ui, craft_slot);
+                                ui.add_space(CRAFT_SECTION_GAP);
+                            }
+
                             ui.vertical(|ui| {
                                 ui.label(
-                                    RichText::new(format!("Crafting {}x{}", craft_cols, craft_rows))
-                                        .size(15.0),
+                                    RichText::new("Crafting")
+                                        .size(16.0)
+                                        .color(Color32::from_rgb(52, 52, 52)),
                                 );
-                                ui.add_space(3.0);
-                                for row in 0..craft_rows {
-                                    ui.horizontal(|ui| {
-                                        for col in 0..craft_cols {
-                                            let idx = row * craft_cols + col;
-                                            let slot = self.craft_slot(idx);
-                                            let tex = self.slot_texture_id(ctx, slot);
-                                            let resp = paint_slot(ui, &slot, false, craft_slot, tex);
-                                            self.handle_slot_interaction(SlotId::Craft(idx), &resp);
+                                ui.add_space(2.0);
+                                ui.horizontal_top(|ui| {
+                                    ui.vertical(|ui| {
+                                        for row in 0..craft_rows {
+                                            ui.horizontal(|ui| {
+                                                for col in 0..craft_cols {
+                                                    let idx = row * craft_cols + col;
+                                                    let slot = self.craft_slot(idx);
+                                                    let tex = self.slot_texture_id(ctx, slot);
+                                                    let resp = paint_slot(ui, &slot, false, craft_slot, tex);
+                                                    self.handle_slot_interaction(SlotId::Craft(idx), &resp);
+                                                }
+                                            });
                                         }
                                     });
-                                }
-                            });
 
-                            ui.add_space(12.0);
-                            ui.vertical_centered(|ui| {
-                                ui.add_space(craft_slot + 8.0);
-                                ui.label(RichText::new("->").size(18.0).color(Color32::from_rgb(230, 230, 230)));
-                            });
-                            ui.add_space(8.0);
+                                    ui.add_space(CRAFT_SECTION_GAP);
+                                    ui.vertical(|ui| {
+                                        ui.add_space(((craft_grid_h - CRAFT_ARROW_SIZE) * 0.5).max(0.0));
+                                        ui.label(
+                                            RichText::new("->")
+                                                .size(CRAFT_ARROW_SIZE)
+                                                .color(Color32::from_rgb(148, 148, 148)),
+                                        );
+                                    });
+                                    ui.add_space(CRAFT_RESULT_GAP);
 
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new("Result").size(16.0));
-                                ui.add_space(3.0);
-                                let output = self.current_craft_output();
-                                let out_tex = output.and_then(|o| match o {
-                                    CraftOutput::Block { block, .. } => self.block_texture_id(ctx, block),
-                                    CraftOutput::Tool(tool) => self.tool_texture_id(ctx, tool),
+                                    ui.vertical(|ui| {
+                                        ui.add_space(((craft_grid_h - craft_slot) * 0.5).max(0.0));
+                                        let output = self.current_craft_output();
+                                        let out_tex = output.and_then(|o| match o {
+                                            CraftOutput::Block { block, .. } => {
+                                                self.block_texture_id(ctx, block)
+                                            }
+                                            CraftOutput::Tool(tool) => self.tool_texture_id(ctx, tool),
+                                        });
+                                        let out_resp =
+                                            paint_craft_result_slot(ui, output.as_ref(), craft_slot, out_tex);
+                                        if out_resp.clicked_by(egui::PointerButton::Primary) {
+                                            if let Some(out) = output {
+                                                self.take_craft_result(out, false);
+                                            }
+                                        } else if out_resp.clicked_by(egui::PointerButton::Secondary) {
+                                            if let Some(out) = output {
+                                                self.take_craft_result(out, true);
+                                            }
+                                        }
+                                    });
                                 });
-                                let out_resp =
-                                    paint_craft_result_slot(ui, output.as_ref(), craft_slot + 2.0, out_tex);
-                                if out_resp.clicked_by(egui::PointerButton::Primary) {
-                                    if let Some(out) = output {
-                                        self.take_craft_result(out, false);
-                                    }
-                                } else if out_resp.clicked_by(egui::PointerButton::Secondary) {
-                                    if let Some(out) = output {
-                                        self.take_craft_result(out, true);
-                                    }
-                                }
-                                ui.add_space(4.0);
-                                let craft_hint = output
-                                    .map(|o| craft_output_label(o).to_string())
-                                    .unwrap_or_else(|| format!("Place recipe in {}x{} grid", craft_cols, craft_rows));
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(craft_hint)
-                                            .size(12.0)
-                                            .color(Color32::from_rgb(200, 200, 200)),
-                                    )
-                                    .wrap(true),
-                                );
                             });
                         });
                     }
 
-                    ui.add_space(12.0);
-                    ui.label(RichText::new("Inventory").size(17.0));
-                    ui.add_space(4.0);
-                    let inv_slot = 24.0;
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("Inventory")
+                            .size(16.0)
+                            .color(Color32::from_rgb(52, 52, 52)),
+                    );
+                    ui.add_space(2.0);
+                    let inv_slot = 38.0;
                     for row in 0..3 {
                         ui.horizontal(|ui| {
                             for col in 0..9 {
@@ -664,9 +788,7 @@ impl Inventory {
                         });
                     }
 
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("Hotbar").size(18.0));
-                    ui.add_space(4.0);
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         for i in 0..HOTBAR_SLOTS {
                             let slot = self.hotbar[i];
@@ -675,24 +797,10 @@ impl Inventory {
                             self.handle_slot_interaction(SlotId::Hotbar(i), &resp);
                         }
                     });
-
-                    ui.add_space(10.0);
-                    let footer_hint = if self.mode == InventoryMode::Furnace {
-                        "Put smeltable item into Input and fuel into Fuel (Log=2, Wood=1.5, Coal=5)."
-                    } else {
-                        "Drag items into crafting grid and take from result slot."
-                    };
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(footer_hint)
-                                .size(12.0)
-                                .color(Color32::from_rgb(200, 200, 200)),
-                        )
-                        .wrap(true),
-                    );
                 });
             });
 
+        self.finish_drag_distribution_if_released(ctx);
         self.draw_carried(ctx);
     }
 
@@ -700,18 +808,18 @@ impl Inventory {
         let slot_size = 34.0;
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new("Input").size(14.0));
+                ui.label(RichText::new("Input").size(14.0).color(Color32::from_rgb(52, 52, 52)));
                 let input_tex = self.slot_texture_id(ctx, self.furnace_input);
                 let input_resp = paint_slot(ui, &self.furnace_input, false, slot_size, input_tex);
                 self.handle_slot_interaction(SlotId::FurnaceInput, &input_resp);
                 ui.add_space(4.0);
-                ui.label(RichText::new("Fuel").size(14.0));
+                ui.label(RichText::new("Fuel").size(14.0).color(Color32::from_rgb(52, 52, 52)));
                 let fuel_tex = self.slot_texture_id(ctx, self.furnace_fuel);
                 let fuel_resp = paint_slot(ui, &self.furnace_fuel, false, slot_size, fuel_tex);
                 self.handle_slot_interaction(SlotId::FurnaceFuel, &fuel_resp);
             });
 
-            ui.add_space(12.0);
+            ui.add_space(FURNACE_COLUMN_GAP);
             ui.vertical_centered(|ui| {
                 ui.add_space(12.0);
                 draw_meter(
@@ -721,7 +829,7 @@ impl Inventory {
                     Color32::from_rgb(214, 166, 70),
                 );
                 ui.add_space(6.0);
-                ui.label(RichText::new("Smelting").size(11.0).color(Color32::from_rgb(200, 200, 200)));
+                ui.label(RichText::new("Smelting").size(11.0).color(Color32::from_rgb(80, 80, 80)));
                 ui.add_space(8.0);
                 draw_meter(
                     ui,
@@ -730,12 +838,12 @@ impl Inventory {
                     Color32::from_rgb(232, 112, 58),
                 );
                 ui.add_space(4.0);
-                ui.label(RichText::new("Fuel").size(11.0).color(Color32::from_rgb(200, 200, 200)));
+                ui.label(RichText::new("Fuel").size(11.0).color(Color32::from_rgb(80, 80, 80)));
             });
 
-            ui.add_space(12.0);
+            ui.add_space(FURNACE_COLUMN_GAP);
             ui.vertical(|ui| {
-                ui.label(RichText::new("Output").size(14.0));
+                ui.label(RichText::new("Output").size(14.0).color(Color32::from_rgb(52, 52, 52)));
                 let out_tex = self.slot_texture_id(ctx, self.furnace_output);
                 let out_resp = paint_slot(ui, &self.furnace_output, false, slot_size, out_tex);
                 self.handle_slot_interaction(SlotId::FurnaceOutput, &out_resp);
@@ -744,11 +852,23 @@ impl Inventory {
     }
 
     fn handle_slot_interaction(&mut self, slot_id: SlotId, resp: &egui::Response) {
-        let primary = resp.clicked_by(egui::PointerButton::Primary);
-        let secondary = resp.clicked_by(egui::PointerButton::Secondary);
+        self.show_slot_hover_tooltip(slot_id, resp);
+        self.handle_drag_hover(slot_id, resp);
+
+        let primary_clicked = resp.clicked_by(egui::PointerButton::Primary);
+        let secondary_clicked = resp.clicked_by(egui::PointerButton::Secondary);
+        let primary_pressed = resp
+            .ctx
+            .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+        let secondary_pressed = resp
+            .ctx
+            .input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+        let primary_down = resp.ctx.input(|i| i.pointer.primary_down());
+        let secondary_down = resp.ctx.input(|i| i.pointer.secondary_down());
+        let shift_down = resp.ctx.input(|i| i.modifiers.shift);
 
         if let SlotId::Hotbar(i) = slot_id {
-            if primary || secondary {
+            if primary_clicked || secondary_clicked {
                 self.select_hotbar_slot(i);
             }
         }
@@ -757,11 +877,421 @@ impl Inventory {
             return;
         }
 
-        if primary {
+        let pointer_on_this_slot = resp.hovered() || resp.contains_pointer();
+
+        if self.drag_distribute.is_none() && pointer_on_this_slot {
+            if primary_pressed || primary_down {
+                if self.try_start_drag_distribution(slot_id, DragDistributeButton::Primary, shift_down) {
+                    return;
+                }
+            } else if secondary_pressed || secondary_down {
+                if self.try_start_drag_distribution(slot_id, DragDistributeButton::Secondary, shift_down) {
+                    return;
+                }
+            }
+        }
+
+        // While drag-distribution is active we only collect hovered slots.
+        // Placement is finalized on button release in finish_drag_distribution_if_released().
+        if self.drag_distribute.is_some() {
+            return;
+        }
+
+        if primary_clicked && shift_down {
+            if self.shift_click_slot(slot_id) {
+                return;
+            }
+        }
+
+        if primary_clicked {
             self.primary_click_slot(slot_id);
-        } else if secondary {
+        } else if secondary_clicked {
             self.secondary_click_slot(slot_id);
         }
+    }
+
+    fn try_start_drag_distribution(
+        &mut self,
+        slot_id: SlotId,
+        button: DragDistributeButton,
+        shift_down: bool,
+    ) -> bool {
+        if shift_down
+            || slot_id == SlotId::FurnaceOutput
+            || self.carried.is_empty()
+            || self.carried.is_tool()
+        {
+            return false;
+        }
+
+        self.drag_distribute = Some(DragDistributeState {
+            button,
+            touched_slots: Vec::new(),
+        });
+        self.touch_drag_slot(slot_id);
+        true
+    }
+
+    fn handle_drag_hover(&mut self, slot_id: SlotId, resp: &egui::Response) {
+        if !(resp.hovered() || resp.contains_pointer()) {
+            return;
+        }
+        let Some(state) = &self.drag_distribute else {
+            return;
+        };
+        let button_down = resp.ctx.input(|i| match state.button {
+            DragDistributeButton::Primary => i.pointer.primary_down(),
+            DragDistributeButton::Secondary => i.pointer.secondary_down(),
+        });
+        if !button_down {
+            return;
+        }
+        self.touch_drag_slot(slot_id);
+    }
+
+    fn touch_drag_slot(&mut self, slot_id: SlotId) {
+        let Some(button) = self.drag_distribute.as_ref().map(|d| d.button) else {
+            return;
+        };
+        if slot_id == SlotId::FurnaceOutput {
+            return;
+        }
+
+        let already_touched = self
+            .drag_distribute
+            .as_ref()
+            .is_some_and(|d| d.touched_slots.contains(&slot_id));
+        if already_touched {
+            return;
+        }
+
+        if let Some(drag) = &mut self.drag_distribute {
+            drag.touched_slots.push(slot_id);
+        }
+
+        if button == DragDistributeButton::Secondary {
+            self.place_one_from_carried(slot_id);
+        }
+    }
+
+    fn finish_drag_distribution_if_released(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.drag_distribute.as_ref() else {
+            return;
+        };
+
+        let still_down = ctx.input(|i| match state.button {
+            DragDistributeButton::Primary => i.pointer.primary_down(),
+            DragDistributeButton::Secondary => i.pointer.secondary_down(),
+        });
+        if still_down {
+            return;
+        }
+
+        let Some(state) = self.drag_distribute.take() else {
+            return;
+        };
+        if state.button == DragDistributeButton::Primary {
+            self.distribute_carried_evenly(state.touched_slots);
+        }
+    }
+
+    fn place_one_from_carried(&mut self, slot_id: SlotId) {
+        if self.carried.is_empty() || self.carried.is_tool() || slot_id == SlotId::FurnaceOutput {
+            return;
+        }
+
+        let one = Slot::new(self.carried.block, 1);
+        if !self.can_place_in_slot(one, slot_id) {
+            return;
+        }
+
+        let mut slot = self.slot(slot_id);
+        if slot.is_empty() {
+            slot = one;
+        } else if !slot.is_tool()
+            && slot.block == self.carried.block
+            && slot.count < MAX_STACK_SIZE
+        {
+            slot.count += 1;
+        } else {
+            return;
+        }
+
+        self.carried.count = self.carried.count.saturating_sub(1);
+        if self.carried.count == 0 {
+            self.carried.clear();
+        }
+        *self.slot_mut(slot_id) = slot;
+    }
+
+    fn distribute_carried_evenly(&mut self, touched_slots: Vec<SlotId>) {
+        if self.carried.is_empty() || self.carried.is_tool() || touched_slots.is_empty() {
+            return;
+        }
+
+        if touched_slots.len() == 1 {
+            self.primary_click_slot(touched_slots[0]);
+            return;
+        }
+
+        let mut valid_slots = Vec::new();
+        let mut capacities: Vec<u16> = Vec::new();
+        for slot_id in touched_slots {
+            let cap = self.slot_capacity_for_carried(slot_id);
+            if cap > 0 {
+                valid_slots.push(slot_id);
+                capacities.push(cap);
+            }
+        }
+        if valid_slots.is_empty() {
+            return;
+        }
+
+        let total_capacity: u16 = capacities
+            .iter()
+            .fold(0u16, |acc, &cap| acc.saturating_add(cap));
+        let to_place = self.carried.count.min(total_capacity);
+        if to_place == 0 {
+            return;
+        }
+
+        let slot_count = valid_slots.len() as u16;
+        let base = to_place / slot_count;
+        let rem = to_place % slot_count;
+
+        for i in 0..valid_slots.len() {
+            if self.carried.is_empty() {
+                break;
+            }
+            let mut target = base;
+            if (i as u16) < rem {
+                target = target.saturating_add(1);
+            }
+            let put = target.min(capacities[i]).min(self.carried.count);
+            if put == 0 {
+                continue;
+            }
+            self.place_multiple_from_carried(valid_slots[i], put);
+            capacities[i] = capacities[i].saturating_sub(put);
+        }
+
+        while !self.carried.is_empty() {
+            let mut placed_any = false;
+            for i in 0..valid_slots.len() {
+                if capacities[i] == 0 || self.carried.is_empty() {
+                    continue;
+                }
+                self.place_multiple_from_carried(valid_slots[i], 1);
+                capacities[i] = capacities[i].saturating_sub(1);
+                placed_any = true;
+                if self.carried.is_empty() {
+                    break;
+                }
+            }
+            if !placed_any {
+                break;
+            }
+        }
+    }
+
+    fn slot_capacity_for_carried(&self, slot_id: SlotId) -> u16 {
+        if self.carried.is_empty() || self.carried.is_tool() || slot_id == SlotId::FurnaceOutput {
+            return 0;
+        }
+
+        let slot = self.slot(slot_id);
+        if slot.is_empty() {
+            let one = Slot::new(self.carried.block, 1);
+            if self.can_place_in_slot(one, slot_id) {
+                return MAX_STACK_SIZE;
+            }
+            return 0;
+        }
+
+        if slot.is_tool() || slot.block != self.carried.block {
+            return 0;
+        }
+        MAX_STACK_SIZE.saturating_sub(slot.count)
+    }
+
+    fn place_multiple_from_carried(&mut self, slot_id: SlotId, amount: u16) {
+        if amount == 0 || self.carried.is_empty() || self.carried.is_tool() {
+            return;
+        }
+
+        let mut slot = self.slot(slot_id);
+        if slot.is_empty() {
+            let one = Slot::new(self.carried.block, 1);
+            if !self.can_place_in_slot(one, slot_id) {
+                return;
+            }
+            slot = Slot::new(self.carried.block, amount.min(self.carried.count));
+            self.carried.count = self.carried.count.saturating_sub(slot.count);
+        } else if !slot.is_tool() && slot.block == self.carried.block {
+            let room = slot.available_space();
+            let put = room.min(amount).min(self.carried.count);
+            if put == 0 {
+                return;
+            }
+            slot.count += put;
+            self.carried.count = self.carried.count.saturating_sub(put);
+        } else {
+            return;
+        }
+
+        if self.carried.count == 0 {
+            self.carried.clear();
+        }
+        *self.slot_mut(slot_id) = slot;
+    }
+
+    fn shift_click_slot(&mut self, slot_id: SlotId) -> bool {
+        match slot_id {
+            SlotId::Hotbar(i) => {
+                let mut slot = self.hotbar[i];
+                if slot.is_empty() {
+                    return false;
+                }
+                shift_merge_slot(&mut slot, &mut self.grid);
+                let changed = slot.count != self.hotbar[i].count || slot.tool != self.hotbar[i].tool;
+                self.hotbar[i] = slot;
+                changed
+            }
+            SlotId::Grid(i) => {
+                let mut slot = self.grid[i];
+                if slot.is_empty() {
+                    return false;
+                }
+                shift_merge_slot(&mut slot, &mut self.hotbar);
+                let changed = slot.count != self.grid[i].count || slot.tool != self.grid[i].tool;
+                self.grid[i] = slot;
+                changed
+            }
+            SlotId::Craft(i) => {
+                let mut slot = self.craft_slot(i);
+                if slot.is_empty() {
+                    return false;
+                }
+                shift_merge_slot(&mut slot, &mut self.hotbar);
+                if !slot.is_empty() {
+                    shift_merge_slot(&mut slot, &mut self.grid);
+                }
+                let changed = slot.count != self.craft_slot(i).count || slot.tool != self.craft_slot(i).tool;
+                *self.craft_slot_mut(i) = slot;
+                changed
+            }
+            SlotId::FurnaceInput => {
+                let mut slot = self.furnace_input;
+                if slot.is_empty() {
+                    return false;
+                }
+                shift_merge_slot(&mut slot, &mut self.hotbar);
+                if !slot.is_empty() {
+                    shift_merge_slot(&mut slot, &mut self.grid);
+                }
+                let changed = slot.count != self.furnace_input.count || slot.tool != self.furnace_input.tool;
+                self.furnace_input = slot;
+                changed
+            }
+            SlotId::FurnaceFuel => {
+                let mut slot = self.furnace_fuel;
+                if slot.is_empty() {
+                    return false;
+                }
+                shift_merge_slot(&mut slot, &mut self.hotbar);
+                if !slot.is_empty() {
+                    shift_merge_slot(&mut slot, &mut self.grid);
+                }
+                let changed = slot.count != self.furnace_fuel.count || slot.tool != self.furnace_fuel.tool;
+                self.furnace_fuel = slot;
+                changed
+            }
+            SlotId::FurnaceOutput => {
+                let mut slot = self.furnace_output;
+                if slot.is_empty() {
+                    return false;
+                }
+                shift_merge_slot(&mut slot, &mut self.hotbar);
+                if !slot.is_empty() {
+                    shift_merge_slot(&mut slot, &mut self.grid);
+                }
+                let changed = slot.count != self.furnace_output.count || slot.tool != self.furnace_output.tool;
+                self.furnace_output = slot;
+                changed
+            }
+        }
+    }
+
+    fn show_slot_hover_tooltip(&self, slot_id: SlotId, resp: &egui::Response) {
+        if !resp.hovered() {
+            return;
+        }
+
+        let slot = self.slot(slot_id);
+        if slot.is_empty() {
+            return;
+        }
+
+        let (name, item_id) = if let Some(tool) = slot.tool {
+            (tool.display_name(), item_registry::tool_item_id(tool))
+        } else {
+            (block_display_name(slot.block), item_registry::block_item_id(slot.block))
+        };
+        let shift_down = resp.ctx.input(|i| i.modifiers.shift);
+
+        let _ = resp.clone().on_hover_ui_at_pointer(|ui| {
+            egui::Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(18, 18, 18, 242))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(64, 64, 64)))
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_min_width(170.0);
+                    ui.label(
+                        RichText::new(name)
+                            .size(13.0)
+                            .strong()
+                            .color(Color32::from_rgb(236, 236, 236)),
+                    );
+                    if !shift_down {
+                        ui.label(
+                            RichText::new("Hold Shift for details")
+                                .size(11.0)
+                                .color(Color32::from_rgb(170, 170, 170)),
+                        );
+                        return;
+                    }
+
+                    if let Some(tool) = slot.tool {
+                        let max_durability = item_registry::tool_max_durability(tool).max(1);
+                        let mut durability = self.tool_durability_values[tool.idx()];
+                        if durability == 0 {
+                            durability = max_durability;
+                        }
+                        durability = durability.min(max_durability);
+                        ui.label(
+                            RichText::new(format!("Durability: {durability}/{max_durability}"))
+                                .size(12.0)
+                                .color(Color32::from_rgb(208, 208, 208)),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new(format!("Stack: {}", slot.count))
+                                .size(12.0)
+                                .color(Color32::from_rgb(208, 208, 208)),
+                        );
+                    }
+                    ui.label(
+                        RichText::new(format!("ID: {}", item_id))
+                            .size(12.0)
+                            .color(Color32::from_rgb(208, 208, 208)),
+                    );
+                    ui.label(
+                        RichText::new("Source: minecraft")
+                            .size(12.0)
+                            .color(Color32::from_rgb(188, 188, 188)),
+                    );
+                });
+        });
     }
 
     fn current_craft_output(&self) -> Option<CraftOutput> {
@@ -1189,12 +1719,7 @@ impl Inventory {
             egui::Id::new("inv_carried_item"),
         ));
 
-        painter.rect_filled(rect, egui::Rounding::same(2.0), Color32::from_rgb(55, 55, 55));
-        painter.rect_stroke(
-            rect,
-            egui::Rounding::same(2.0),
-            Stroke::new(1.0, Color32::from_rgb(210, 210, 210)),
-        );
+        paint_minecraft_slot_frame(&painter, rect, true);
 
         let item_rect = rect.shrink(4.0);
         let tex = self.slot_texture_id(ctx, self.carried);
@@ -1392,6 +1917,11 @@ const R_STICKS: [Option<Block>; 2] = [
     Some(Block::Wood),
 ];
 
+const R_TORCHES: [Option<Block>; 2] = [
+    Some(Block::Coal),
+    Some(Block::Stick),
+];
+
 const R_WOOD_PICKAXE: [Option<Block>; 9] = [
     Some(Block::Wood), Some(Block::Wood), Some(Block::Wood),
     None,              Some(Block::Stick), None,
@@ -1414,6 +1944,72 @@ const R_WOOD_HOE: [Option<Block>; 6] = [
     Some(Block::Wood), Some(Block::Wood),
     None,              Some(Block::Stick),
     None,              Some(Block::Stick),
+];
+
+const R_WOOD_SWORD: [Option<Block>; 3] = [
+    Some(Block::Wood),
+    Some(Block::Wood),
+    Some(Block::Stick),
+];
+
+const R_STONE_PICKAXE: [Option<Block>; 9] = [
+    Some(Block::Stone), Some(Block::Stone), Some(Block::Stone),
+    None,               Some(Block::Stick), None,
+    None,               Some(Block::Stick), None,
+];
+
+const R_STONE_AXE: [Option<Block>; 6] = [
+    Some(Block::Stone), Some(Block::Stone),
+    Some(Block::Stone), Some(Block::Stick),
+    None,               Some(Block::Stick),
+];
+
+const R_STONE_SHOVEL: [Option<Block>; 3] = [
+    Some(Block::Stone),
+    Some(Block::Stick),
+    Some(Block::Stick),
+];
+
+const R_STONE_HOE: [Option<Block>; 6] = [
+    Some(Block::Stone), Some(Block::Stone),
+    None,               Some(Block::Stick),
+    None,               Some(Block::Stick),
+];
+
+const R_STONE_SWORD: [Option<Block>; 3] = [
+    Some(Block::Stone),
+    Some(Block::Stone),
+    Some(Block::Stick),
+];
+
+const R_IRON_PICKAXE: [Option<Block>; 9] = [
+    Some(Block::IronIngot), Some(Block::IronIngot), Some(Block::IronIngot),
+    None,                   Some(Block::Stick),      None,
+    None,                   Some(Block::Stick),      None,
+];
+
+const R_IRON_AXE: [Option<Block>; 6] = [
+    Some(Block::IronIngot), Some(Block::IronIngot),
+    Some(Block::IronIngot), Some(Block::Stick),
+    None,                   Some(Block::Stick),
+];
+
+const R_IRON_SHOVEL: [Option<Block>; 3] = [
+    Some(Block::IronIngot),
+    Some(Block::Stick),
+    Some(Block::Stick),
+];
+
+const R_IRON_HOE: [Option<Block>; 6] = [
+    Some(Block::IronIngot), Some(Block::IronIngot),
+    None,                   Some(Block::Stick),
+    None,                   Some(Block::Stick),
+];
+
+const R_IRON_SWORD: [Option<Block>; 3] = [
+    Some(Block::IronIngot),
+    Some(Block::IronIngot),
+    Some(Block::Stick),
 ];
 
 const R_FURNACE: [Option<Block>; 9] = [
@@ -1455,6 +2051,16 @@ fn craft_recipes() -> &'static [CraftGridRecipe] {
             allow_mirror: false,
         },
         CraftGridRecipe {
+            width: 1,
+            height: 2,
+            cells: &R_TORCHES,
+            output: CraftOutput::Block {
+                block: Block::Torch,
+                count: 4,
+            },
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
             width: 3,
             height: 3,
             cells: &R_WOOD_PICKAXE,
@@ -1483,6 +2089,83 @@ fn craft_recipes() -> &'static [CraftGridRecipe] {
             allow_mirror: true,
         },
         CraftGridRecipe {
+            width: 1,
+            height: 3,
+            cells: &R_WOOD_SWORD,
+            output: CraftOutput::Tool(WoodenTool::Sword),
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
+            width: 3,
+            height: 3,
+            cells: &R_STONE_PICKAXE,
+            output: CraftOutput::Tool(WoodenTool::StonePickaxe),
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
+            width: 2,
+            height: 3,
+            cells: &R_STONE_AXE,
+            output: CraftOutput::Tool(WoodenTool::StoneAxe),
+            allow_mirror: true,
+        },
+        CraftGridRecipe {
+            width: 1,
+            height: 3,
+            cells: &R_STONE_SHOVEL,
+            output: CraftOutput::Tool(WoodenTool::StoneShovel),
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
+            width: 2,
+            height: 3,
+            cells: &R_STONE_HOE,
+            output: CraftOutput::Tool(WoodenTool::StoneHoe),
+            allow_mirror: true,
+        },
+        CraftGridRecipe {
+            width: 1,
+            height: 3,
+            cells: &R_STONE_SWORD,
+            output: CraftOutput::Tool(WoodenTool::StoneSword),
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
+            width: 3,
+            height: 3,
+            cells: &R_IRON_PICKAXE,
+            output: CraftOutput::Tool(WoodenTool::IronPickaxe),
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
+            width: 2,
+            height: 3,
+            cells: &R_IRON_AXE,
+            output: CraftOutput::Tool(WoodenTool::IronAxe),
+            allow_mirror: true,
+        },
+        CraftGridRecipe {
+            width: 1,
+            height: 3,
+            cells: &R_IRON_SHOVEL,
+            output: CraftOutput::Tool(WoodenTool::IronShovel),
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
+            width: 2,
+            height: 3,
+            cells: &R_IRON_HOE,
+            output: CraftOutput::Tool(WoodenTool::IronHoe),
+            allow_mirror: true,
+        },
+        CraftGridRecipe {
+            width: 1,
+            height: 3,
+            cells: &R_IRON_SWORD,
+            output: CraftOutput::Tool(WoodenTool::IronSword),
+            allow_mirror: false,
+        },
+        CraftGridRecipe {
             width: 3,
             height: 3,
             cells: &R_FURNACE,
@@ -1504,7 +2187,7 @@ struct FurnaceRecipe {
 }
 
 fn furnace_recipe_for(input: Block) -> Option<FurnaceRecipe> {
-    const RECIPES: [FurnaceRecipe; 3] = [
+    const RECIPES: [FurnaceRecipe; 4] = [
         FurnaceRecipe {
             input: Block::Log,
             output: Block::Coal,
@@ -1518,6 +2201,11 @@ fn furnace_recipe_for(input: Block) -> Option<FurnaceRecipe> {
         FurnaceRecipe {
             input: Block::CoalOre,
             output: Block::Coal,
+            output_count: 1,
+        },
+        FurnaceRecipe {
+            input: Block::IronOre,
+            output: Block::IronIngot,
             output_count: 1,
         },
     ];
@@ -1552,6 +2240,58 @@ fn consume_block_from_slot(slot: &mut Slot, expected: Block, amount: u16) -> boo
     true
 }
 
+fn shift_merge_slot(source: &mut Slot, target: &mut [Slot]) {
+    if source.is_empty() {
+        return;
+    }
+
+    if source.is_tool() {
+        for dst in target.iter_mut() {
+            if dst.is_empty() {
+                *dst = *source;
+                source.clear();
+                return;
+            }
+        }
+        return;
+    }
+
+    for dst in target.iter_mut() {
+        if source.is_empty() {
+            return;
+        }
+        if dst.is_empty() || dst.is_tool() || dst.block != source.block || dst.count >= MAX_STACK_SIZE {
+            continue;
+        }
+        let moved = source.count.min(dst.available_space());
+        if moved == 0 {
+            continue;
+        }
+        dst.count += moved;
+        source.count -= moved;
+        if source.count == 0 {
+            source.clear();
+            return;
+        }
+    }
+
+    for dst in target.iter_mut() {
+        if source.is_empty() {
+            return;
+        }
+        if !dst.is_empty() {
+            continue;
+        }
+        let moved = source.count.min(MAX_STACK_SIZE);
+        *dst = Slot::new(source.block, moved);
+        source.count -= moved;
+        if source.count == 0 {
+            source.clear();
+            return;
+        }
+    }
+}
+
 fn draw_meter(ui: &mut egui::Ui, value: f32, size: egui::Vec2, fill: Color32) {
     let value = value.clamp(0.0, 1.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -1582,6 +2322,7 @@ fn mirrored_cells(width: usize, height: usize, cells: &[Option<Block>]) -> Vec<O
     out
 }
 
+#[allow(dead_code)]
 fn craft_output_label(output: CraftOutput) -> &'static str {
     match output {
         CraftOutput::Block { block: Block::Wood, .. } => "Wood x4",
@@ -1593,6 +2334,86 @@ fn craft_output_label(output: CraftOutput) -> &'static str {
     }
 }
 
+fn draw_player_preview_stub(ui: &mut egui::Ui, slot_size: f32) {
+    let armor_slot = (slot_size - 2.0).max(26.0);
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            for _ in 0..4 {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(armor_slot, armor_slot), egui::Sense::hover());
+                paint_minecraft_slot_frame(ui.painter(), rect, false);
+                ui.add_space(2.0);
+            }
+        });
+
+        ui.add_space(4.0);
+        let preview_size = egui::vec2(slot_size * 2.95, slot_size * 4.05);
+        let (rect, _) = ui.allocate_exact_size(preview_size, egui::Sense::hover());
+        let painter = ui.painter();
+        painter.rect_filled(rect, egui::Rounding::same(0.0), Color32::from_rgb(6, 6, 6));
+        painter.rect_stroke(
+            rect,
+            egui::Rounding::same(0.0),
+            Stroke::new(1.0, Color32::from_rgb(56, 56, 56)),
+        );
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "Player",
+            FontId::monospace(13.0),
+            Color32::from_rgb(116, 116, 116),
+        );
+    });
+}
+
+fn paint_minecraft_slot_frame(painter: &egui::Painter, rect: egui::Rect, selected: bool) {
+    let base = if selected {
+        Color32::from_rgb(166, 166, 166)
+    } else {
+        Color32::from_rgb(142, 142, 142)
+    };
+    painter.rect_filled(rect, egui::Rounding::same(0.0), base);
+    painter.rect_stroke(
+        rect,
+        egui::Rounding::same(0.0),
+        Stroke::new(1.0, Color32::from_rgb(55, 55, 55)),
+    );
+    let min = rect.min;
+    let max = rect.max;
+    let light = Color32::from_rgb(232, 232, 232);
+    let dark = Color32::from_rgb(42, 42, 42);
+    painter.line_segment([min, egui::pos2(max.x, min.y)], Stroke::new(1.0, light));
+    painter.line_segment([min, egui::pos2(min.x, max.y)], Stroke::new(1.0, light));
+    painter.line_segment([egui::pos2(min.x, max.y), max], Stroke::new(1.0, dark));
+    painter.line_segment([egui::pos2(max.x, min.y), max], Stroke::new(1.0, dark));
+
+    if selected {
+        painter.rect_stroke(
+            rect.expand(1.0),
+            egui::Rounding::same(0.0),
+            Stroke::new(1.0, Color32::from_rgb(255, 255, 255)),
+        );
+    }
+}
+
+fn paint_stack_count_text(painter: &egui::Painter, rect: egui::Rect, text: &str) {
+    let pos = rect.right_bottom() - egui::vec2(3.0, 3.0);
+    painter.text(
+        pos + egui::vec2(1.0, 1.0),
+        Align2::RIGHT_BOTTOM,
+        text,
+        FontId::proportional(20.0),
+        Color32::from_rgb(36, 36, 36),
+    );
+    painter.text(
+        pos,
+        Align2::RIGHT_BOTTOM,
+        text,
+        FontId::proportional(20.0),
+        Color32::from_rgb(246, 246, 246),
+    );
+}
+
 fn paint_craft_result_slot(
     ui: &mut egui::Ui,
     output: Option<&CraftOutput>,
@@ -1601,12 +2422,7 @@ fn paint_craft_result_slot(
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     let painter = ui.painter();
-    painter.rect_filled(rect, egui::Rounding::same(2.0), Color32::from_rgb(55, 55, 55));
-    painter.rect_stroke(
-        rect,
-        egui::Rounding::same(2.0),
-        Stroke::new(1.0, Color32::from_rgb(20, 20, 20)),
-    );
+    paint_minecraft_slot_frame(painter, rect, false);
 
     if let Some(output) = output {
         let item_rect = rect.shrink(4.0);
@@ -1614,13 +2430,7 @@ fn paint_craft_result_slot(
             CraftOutput::Block { block, count } => {
                 paint_block_icon(&painter, item_rect, *block, block_texture);
                 if *count > 1 {
-                    painter.text(
-                        rect.right_bottom() - egui::vec2(2.0, 2.0),
-                        Align2::RIGHT_BOTTOM,
-                        count.to_string(),
-                        FontId::proportional(12.0),
-                        Color32::WHITE,
-                    );
+                    paint_stack_count_text(&painter, rect, &count.to_string());
                 }
             }
             CraftOutput::Tool(tool) => {
@@ -1653,28 +2463,14 @@ fn paint_slot(
     texture_id: Option<egui::TextureId>,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
-    let bg = Color32::from_rgb(55, 55, 55);
-    let stroke = if selected {
-        Stroke::new(2.0, Color32::from_rgb(200, 200, 200))
-    } else {
-        Stroke::new(1.0, Color32::from_rgb(20, 20, 20))
-    };
-    let rounding = egui::Rounding::same(2.0);
     let painter = ui.painter();
-    painter.rect_filled(rect, rounding, bg);
-    painter.rect_stroke(rect, rounding, stroke);
+    paint_minecraft_slot_frame(painter, rect, selected);
 
     if !slot.is_empty() {
         let item_rect = rect.shrink(4.0);
         paint_slot_icon(painter, item_rect, slot, texture_id);
         if !slot.is_tool() && slot.count > 1 {
-            painter.text(
-                rect.right_bottom() - egui::vec2(2.0, 2.0),
-                Align2::RIGHT_BOTTOM,
-                slot.count.to_string(),
-                FontId::proportional(12.0),
-                Color32::WHITE,
-            );
+            paint_stack_count_text(painter, rect, &slot.count.to_string());
         }
     }
 
@@ -1729,12 +2525,23 @@ fn tool_icon_style(tool: WoodenTool) -> (&'static str, Color32) {
         WoodenTool::Axe => ("WA", Color32::from_rgb(160, 116, 78)),
         WoodenTool::Shovel => ("WS", Color32::from_rgb(144, 128, 92)),
         WoodenTool::Hoe => ("WH", Color32::from_rgb(154, 122, 86)),
+        WoodenTool::Sword => ("SW", Color32::from_rgb(162, 132, 98)),
+        WoodenTool::StonePickaxe => ("SP", Color32::from_rgb(150, 150, 150)),
+        WoodenTool::StoneAxe => ("SA", Color32::from_rgb(158, 158, 158)),
+        WoodenTool::StoneShovel => ("SS", Color32::from_rgb(144, 144, 144)),
+        WoodenTool::StoneHoe => ("SH", Color32::from_rgb(154, 154, 154)),
+        WoodenTool::StoneSword => ("SX", Color32::from_rgb(166, 166, 166)),
+        WoodenTool::IronPickaxe => ("IP", Color32::from_rgb(191, 191, 210)),
+        WoodenTool::IronAxe => ("IA", Color32::from_rgb(198, 198, 216)),
+        WoodenTool::IronShovel => ("IS", Color32::from_rgb(184, 184, 204)),
+        WoodenTool::IronHoe => ("IH", Color32::from_rgb(194, 194, 212)),
+        WoodenTool::IronSword => ("IX", Color32::from_rgb(206, 206, 222)),
     }
 }
 
 fn load_inventory_block_texture(block: Block) -> Option<egui::ColorImage> {
     if let Some(path) = item_registry::block_texture_path(block) {
-        if let Ok(rgba) = image::open(path).map(|img| img.to_rgba8()) {
+        if let Some(rgba) = decode_rgba_image_from_path(&path) {
             let size = [rgba.width() as usize, rgba.height() as usize];
             let raw = rgba.into_raw();
             return Some(egui::ColorImage::from_rgba_unmultiplied(size, &raw));
@@ -1742,7 +2549,7 @@ fn load_inventory_block_texture(block: Block) -> Option<egui::ColorImage> {
     }
 
     let path = resolve_inventory_texture_path(block)?;
-    let rgba = image::open(path).ok()?.to_rgba8();
+    let rgba = decode_rgba_image_from_path(&path)?;
     let size = [rgba.width() as usize, rgba.height() as usize];
     let raw = rgba.into_raw();
     Some(egui::ColorImage::from_rgba_unmultiplied(size, &raw))
@@ -1750,10 +2557,18 @@ fn load_inventory_block_texture(block: Block) -> Option<egui::ColorImage> {
 
 fn load_inventory_tool_texture(tool: WoodenTool) -> Option<egui::ColorImage> {
     let path = item_registry::tool_texture_path(tool)?;
-    let rgba = image::open(path).ok()?.to_rgba8();
+    let rgba = decode_rgba_image_from_path(&path)?;
     let size = [rgba.width() as usize, rgba.height() as usize];
     let raw = rgba.into_raw();
     Some(egui::ColorImage::from_rgba_unmultiplied(size, &raw))
+}
+
+fn decode_rgba_image_from_path(path: &Path) -> Option<image::RgbaImage> {
+    if let Ok(img) = image::open(path) {
+        return Some(img.to_rgba8());
+    }
+    let bytes = std::fs::read(path).ok()?;
+    image::load_from_memory(&bytes).ok().map(|img| img.to_rgba8())
 }
 
 fn resolve_inventory_texture_path(block: Block) -> Option<PathBuf> {
@@ -1896,6 +2711,8 @@ fn inventory_texture_aliases(block: Block) -> &'static [&'static str] {
         Block::Air | Block::CaveAir => &[],
         Block::Workbench => &[
             "workbench_front",
+            "workbench1",
+            "workbench_front1",
             "workbench_side",
             "workbench",
             "crafting_table",
@@ -1911,6 +2728,8 @@ fn inventory_texture_aliases(block: Block) -> &'static [&'static str] {
             "stone",
         ],
         Block::Coal => &["coal", "charcoal", "coal_item"],
+        Block::IronIngot => &["iron_ingot", "iron", "iron_nugget"],
+        Block::Torch => &["torch", "wall_torch"],
         Block::Wood => &["wood", "planks", "oak_planks"],
         Block::Stick => &["stick"],
         Block::Grass => &["grass", "grass_block_side"],
@@ -1937,6 +2756,8 @@ fn block_color(block: Block) -> Color32 {
         Block::Workbench => Color32::from_rgb(130, 94, 58),
         Block::Furnace => Color32::from_rgb(116, 116, 116),
         Block::Coal => Color32::from_rgb(48, 48, 48),
+        Block::IronIngot => Color32::from_rgb(206, 206, 214),
+        Block::Torch => Color32::from_rgb(238, 186, 86),
         Block::Wood => Color32::from_rgb(166, 132, 89),
         Block::Stick => Color32::from_rgb(174, 142, 104),
         Block::Grass => Color32::from_rgb(72, 148, 46),
@@ -1953,5 +2774,32 @@ fn block_color(block: Block) -> Color32 {
         Block::CoalOre => Color32::from_rgb(84, 84, 84),
         Block::IronOre => Color32::from_rgb(184, 135, 98),
         Block::CopperOre => Color32::from_rgb(168, 100, 66),
+    }
+}
+
+fn block_display_name(block: Block) -> &'static str {
+    match block {
+        Block::Air | Block::CaveAir => "Air",
+        Block::Workbench => "Crafting Table",
+        Block::Furnace => "Furnace",
+        Block::Coal => "Coal",
+        Block::IronIngot => "Iron Ingot",
+        Block::Torch => "Torch",
+        Block::Wood => "Oak Planks",
+        Block::Stick => "Stick",
+        Block::Grass => "Grass Block",
+        Block::Dirt => "Dirt",
+        Block::FarmlandDry => "Farmland",
+        Block::FarmlandWet => "Farmland (Wet)",
+        Block::Stone => "Stone",
+        Block::Sand => "Sand",
+        Block::Water => "Water",
+        Block::Bedrock => "Bedrock",
+        Block::Log => "Oak Log",
+        Block::LogBottom => "Oak Log Top",
+        Block::Leaves => "Oak Leaves",
+        Block::CoalOre => "Coal Ore",
+        Block::IronOre => "Iron Ore",
+        Block::CopperOre => "Copper Ore",
     }
 }

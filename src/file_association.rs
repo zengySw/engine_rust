@@ -1,7 +1,5 @@
 #[cfg(target_os = "windows")]
 pub fn ensure_rc_file_association() {
-    use std::process::Command;
-
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
@@ -41,11 +39,6 @@ pub fn ensure_rc_file_association() {
         return;
     }
 
-    // Ask shell to refresh associations (best-effort).
-    let _ = Command::new("rundll32.exe")
-        .arg("shell32.dll,SHChangeNotify_RunDLL")
-        .status();
-
     log::info!("Registered .rc file association for {:?}", exe);
 }
 
@@ -68,4 +61,3 @@ fn reg_add_default_value(key: &str, value: &str) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn ensure_rc_file_association() {}
-

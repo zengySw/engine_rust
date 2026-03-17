@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 
+use crate::paths;
 use crate::world::block::Block;
 
 pub struct SoundSystem {
@@ -354,10 +355,13 @@ fn classify_misc_family(path: &Path, stem: &str) -> String {
 }
 
 fn sound_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("assets")
-        .join("sound")
+    for root in paths::asset_roots() {
+        let candidate = root.join("sound");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("assets").join("sound")
 }
 
 fn collect_mp3_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use egui::{self, Align2, Color32, FontId, RichText, Stroke};
 
 use crate::item_registry;
+use crate::paths;
 use crate::world::block::Block;
 
 const HOTBAR_SLOTS: usize = 9;
@@ -2572,79 +2573,82 @@ fn decode_rgba_image_from_path(path: &Path) -> Option<image::RgbaImage> {
 }
 
 fn resolve_inventory_texture_path(block: Block) -> Option<PathBuf> {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bases = paths::base_roots();
     let names = inventory_texture_aliases(block);
     let mut candidates = Vec::new();
-    for name in names {
-        candidates.push(base.join("src").join("assets").join("blocks").join(format!("{name}.png")));
-        candidates.push(base.join("src").join("assets").join("items").join(format!("{name}.png")));
-        candidates.push(base.join("src").join("assets").join("blocks").join(format!("{name}.jpg")));
-        candidates.push(base.join("src").join("assets").join("items").join(format!("{name}.jpg")));
-        candidates.push(base.join("src").join("assets").join("blocks").join(format!("{name}.jpeg")));
-        candidates.push(base.join("src").join("assets").join("items").join(format!("{name}.jpeg")));
-        candidates.push(
-            base.join("src")
-                .join("assets")
-                .join("minecraft")
-                .join("textures")
-                .join("block")
-                .join(format!("{name}.png")),
-        );
-        candidates.push(
-            base.join("src")
-                .join("assets")
-                .join("minecraft")
-                .join("textures")
-                .join("block")
-                .join(format!("{name}.jpg")),
-        );
-        candidates.push(
-            base.join("src")
-                .join("assets")
-                .join("minecraft")
-                .join("textures")
-                .join("block")
-                .join(format!("{name}.jpeg")),
-        );
-        candidates.push(base.join("assets").join("blocks").join(format!("{name}.png")));
-        candidates.push(base.join("assets").join("items").join(format!("{name}.png")));
-        candidates.push(base.join("assets").join("blocks").join(format!("{name}.jpg")));
-        candidates.push(base.join("assets").join("items").join(format!("{name}.jpg")));
-        candidates.push(base.join("assets").join("blocks").join(format!("{name}.jpeg")));
-        candidates.push(base.join("assets").join("items").join(format!("{name}.jpeg")));
-        candidates.push(
-            base.join("assets")
-                .join("minecraft")
-                .join("textures")
-                .join("block")
-                .join(format!("{name}.png")),
-        );
-        candidates.push(
-            base.join("assets")
-                .join("minecraft")
-                .join("textures")
-                .join("block")
-                .join(format!("{name}.jpg")),
-        );
-        candidates.push(
-            base.join("assets")
-                .join("minecraft")
-                .join("textures")
-                .join("block")
-                .join(format!("{name}.jpeg")),
-        );
+    for base in &bases {
+        for name in names {
+            candidates.push(base.join("src").join("assets").join("blocks").join(format!("{name}.png")));
+            candidates.push(base.join("src").join("assets").join("items").join(format!("{name}.png")));
+            candidates.push(base.join("src").join("assets").join("blocks").join(format!("{name}.jpg")));
+            candidates.push(base.join("src").join("assets").join("items").join(format!("{name}.jpg")));
+            candidates.push(base.join("src").join("assets").join("blocks").join(format!("{name}.jpeg")));
+            candidates.push(base.join("src").join("assets").join("items").join(format!("{name}.jpeg")));
+            candidates.push(
+                base.join("src")
+                    .join("assets")
+                    .join("minecraft")
+                    .join("textures")
+                    .join("block")
+                    .join(format!("{name}.png")),
+            );
+            candidates.push(
+                base.join("src")
+                    .join("assets")
+                    .join("minecraft")
+                    .join("textures")
+                    .join("block")
+                    .join(format!("{name}.jpg")),
+            );
+            candidates.push(
+                base.join("src")
+                    .join("assets")
+                    .join("minecraft")
+                    .join("textures")
+                    .join("block")
+                    .join(format!("{name}.jpeg")),
+            );
+            candidates.push(base.join("assets").join("blocks").join(format!("{name}.png")));
+            candidates.push(base.join("assets").join("items").join(format!("{name}.png")));
+            candidates.push(base.join("assets").join("blocks").join(format!("{name}.jpg")));
+            candidates.push(base.join("assets").join("items").join(format!("{name}.jpg")));
+            candidates.push(base.join("assets").join("blocks").join(format!("{name}.jpeg")));
+            candidates.push(base.join("assets").join("items").join(format!("{name}.jpeg")));
+            candidates.push(
+                base.join("assets")
+                    .join("minecraft")
+                    .join("textures")
+                    .join("block")
+                    .join(format!("{name}.png")),
+            );
+            candidates.push(
+                base.join("assets")
+                    .join("minecraft")
+                    .join("textures")
+                    .join("block")
+                    .join(format!("{name}.jpg")),
+            );
+            candidates.push(
+                base.join("assets")
+                    .join("minecraft")
+                    .join("textures")
+                    .join("block")
+                    .join(format!("{name}.jpeg")),
+            );
+        }
     }
 
     if let Some(path) = candidates.into_iter().find(|p| p.exists()) {
         return Some(path);
     }
 
-    let recursive_roots = [
-        base.join("src").join("assets").join("blocks"),
-        base.join("src").join("assets").join("items"),
-        base.join("assets").join("blocks"),
-        base.join("assets").join("items"),
-    ];
+    let mut recursive_roots = Vec::new();
+    for base in &bases {
+        recursive_roots.push(base.join("src").join("assets").join("blocks"));
+        recursive_roots.push(base.join("src").join("assets").join("items"));
+        recursive_roots.push(base.join("assets").join("blocks"));
+        recursive_roots.push(base.join("assets").join("items"));
+    }
 
     for root in recursive_roots {
         if !root.exists() {

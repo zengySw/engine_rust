@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::inventory::{Inventory, Slot, WoodenTool};
 use crate::menu::Settings;
+use crate::paths;
 use crate::world::block::Block;
 
 pub type BlockMap = HashMap<(i32, i32, i32), Block>;
@@ -46,7 +47,7 @@ struct SavePaths {
 }
 
 fn saves_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("saves")
+    paths::saves_dir()
 }
 
 fn ensure_saves_dir() -> Option<PathBuf> {

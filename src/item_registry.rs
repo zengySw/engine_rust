@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use crate::inventory::WoodenTool;
+use crate::paths;
 use crate::world::block::Block;
 
 const DEFAULT_WOOD_TOOL_DURABILITY: u16 = 170;
@@ -208,11 +209,11 @@ pub fn block_break_seconds(block: Block, tool: Option<WoodenTool>) -> f32 {
 }
 
 fn items_json_path() -> Option<PathBuf> {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let candidates = [
-        base.join("src").join("assets").join("items").join("items.json"),
-        base.join("assets").join("items").join("items.json"),
-    ];
+    let mut candidates = Vec::new();
+    for base in paths::base_roots() {
+        candidates.push(base.join("src").join("assets").join("items").join("items.json"));
+        candidates.push(base.join("assets").join("items").join("items.json"));
+    }
     candidates.into_iter().find(|p| p.exists())
 }
 
@@ -223,13 +224,13 @@ fn resolve_item_texture_path(rel_or_abs: &str) -> Option<PathBuf> {
         return candidate.exists().then_some(candidate);
     }
 
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
     let rel = Path::new(&normalized);
-    let candidates = [
-        base.join("src").join("assets").join(rel),
-        base.join("assets").join(rel),
-        base.join(rel),
-    ];
+    let mut candidates = Vec::new();
+    for base in paths::base_roots() {
+        candidates.push(base.join("src").join("assets").join(rel));
+        candidates.push(base.join("assets").join(rel));
+        candidates.push(base.join(rel));
+    }
     candidates.into_iter().find(|p| p.exists())
 }
 

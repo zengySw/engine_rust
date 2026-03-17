@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use winit::{
     dpi::LogicalSize,
@@ -15,6 +15,7 @@ use crate::inventory::{Inventory, WoodenTool};
 use crate::item_registry;
 use crate::menu::{EscMenu, MenuAction, Settings};
 use crate::modding::{self, ApiCommand, ApiSnapshot, ModApiRuntime};
+use crate::paths;
 use crate::player::Player;
 use crate::renderer::{
     BlockOutlineVisual, BreakOverlayVisual, DroppedBlockVisual, FirstPersonHandVisual, PlayerVisual, RainDropVisual, Renderer,
@@ -3118,12 +3119,16 @@ fn draw_f3_overlay(ctx: &egui::Context, data: &DebugOverlayData) {
 }
 
 fn resolve_gui_asset_path(file_name: &str) -> Option<PathBuf> {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let candidates = [
-        base.join("src").join("assets").join("gui").join(file_name),
-        base.join("assets").join("gui").join(file_name),
-    ];
-    candidates.into_iter().find(|p| p.exists())
+    for base in paths::base_roots() {
+        let candidates = [
+            base.join("src").join("assets").join("gui").join(file_name),
+            base.join("assets").join("gui").join(file_name),
+        ];
+        if let Some(path) = candidates.into_iter().find(|p| p.exists()) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn load_gui_texture(ctx: &egui::Context, texture_name: &str, file_name: &str) -> Option<egui::TextureHandle> {

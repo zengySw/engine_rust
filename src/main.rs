@@ -7,6 +7,7 @@ mod inventory;
 mod item_registry;
 mod menu;
 mod modding;
+mod paths;
 mod player;
 mod raytracing;
 mod renderer;

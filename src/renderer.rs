@@ -13,6 +13,7 @@ use crate::args::Args;
 use crate::camera::Camera;
 use crate::culling::{Frustum, cull_chunks_parallel};
 use crate::inventory::WoodenTool;
+use crate::paths;
 use crate::raytracing::RayTracingRenderer;
 use crate::world::block::Block;
 use crate::world::chunk::Vertex;
@@ -2297,12 +2298,12 @@ fn load_active_resource_pack() -> Option<ResourcePackData> {
 }
 
 fn find_resource_pack_zips() -> Vec<PathBuf> {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let search_roots = [
-        base.join("src").join("assets").join("packs"),
-        base.join("src").join("assets").join("resourcepacks"),
-        base.join("src").join("assets"),
-    ];
+    let mut search_roots: Vec<PathBuf> = Vec::new();
+    for assets_root in paths::asset_roots() {
+        search_roots.push(assets_root.join("packs"));
+        search_roots.push(assets_root.join("resourcepacks"));
+        search_roots.push(assets_root);
+    }
 
     let mut out = Vec::new();
     for root in search_roots {
@@ -2542,12 +2543,8 @@ fn find_local_texture_recursive_alias(base: &Path, alias: &str) -> Option<PathBu
     matches.into_iter().next()
 }
 
-fn asset_roots() -> [PathBuf; 2] {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-    [
-        base.join("src").join("assets"),
-        base.join("assets"),
-    ]
+fn asset_roots() -> Vec<PathBuf> {
+    paths::asset_roots()
 }
 
 fn load_block_texture(name: &str, pack: Option<&ResourcePackData>) -> RgbaImage {

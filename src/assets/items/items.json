@@ -1,0 +1,274 @@
+{
+  "items": [
+    { "key": "air", "id": 0, "break_seconds": 0.0, "multipliers": { "default": 1.0 } },
+    { "key": "grass", "id": 1, "break_seconds": 1.0, "texture": "blocks/terrain/grass.png", "multipliers": { "default": 1.0 } },
+    { "key": "dirt", "id": 2, "break_seconds": 1.0, "texture": "blocks/terrain/dirt.png", "multipliers": { "default": 1.0 } },
+    { "key": "stone", "id": 3, "break_seconds": 2.2, "texture": "blocks/terrain/stone.png", "multipliers": { "default": 1.0 } },
+    { "key": "sand", "id": 4, "break_seconds": 1.0, "texture": "blocks/terrain/sand.png", "multipliers": { "default": 1.0 } },
+    { "key": "water", "id": 5, "break_seconds": 0.0, "texture": "blocks/terrain/water.png", "multipliers": { "default": 1.0 } },
+    { "key": "bedrock", "id": 6, "break_seconds": 1e30, "texture": "blocks/terrain/bedrock.png", "multipliers": { "default": 1.0 } },
+    { "key": "log", "id": 7, "break_seconds": 3.0, "texture": "blocks/wood/log.jpg", "multipliers": { "default": 1.0 } },
+    { "key": "leaves", "id": 8, "break_seconds": 1.0, "texture": "blocks/wood/leaves.png", "multipliers": { "default": 1.0 } },
+    { "key": "log_bottom", "id": 9, "break_seconds": 3.0, "texture": "blocks/wood/log_top_down.png", "multipliers": { "default": 1.0 } },
+    { "key": "coal_ore", "id": 10, "break_seconds": 2.2, "texture": "blocks/ore/coal_ore.png", "multipliers": { "default": 1.0 } },
+    { "key": "iron_ore", "id": 11, "break_seconds": 2.2, "texture": "blocks/ore/iron_ore.png", "multipliers": { "default": 1.0 } },
+    { "key": "copper_ore", "id": 12, "break_seconds": 2.2, "texture": "blocks/ore/copper_ore.png", "multipliers": { "default": 1.0 } },
+    { "key": "farmland_dry", "id": 13, "break_seconds": 1.0, "texture": "blocks/terrain/dirt.png", "multipliers": { "default": 1.0 } },
+    { "key": "farmland_wet", "id": 14, "break_seconds": 1.0, "texture": "blocks/terrain/dirt.png", "multipliers": { "default": 1.0 } },
+    { "key": "cave_air", "id": 15, "break_seconds": 0.0, "multipliers": { "default": 1.0 } },
+    { "key": "workbench", "id": 16, "break_seconds": 3.0, "texture": "blocks/starter_blocks/workbench/workbench1.png", "multipliers": { "default": 1.0 } },
+    { "key": "wood", "id": 17, "break_seconds": 3.0, "texture": "blocks/wood/planks.png", "multipliers": { "default": 1.0 } },
+    { "key": "stick", "id": 18, "break_seconds": 0.0, "texture": "items/misc/stick.png", "multipliers": { "default": 1.0 } },
+    { "key": "furnace", "id": 19, "break_seconds": 2.2, "texture": "blocks/starter_blocks/furnace/furnace_face.png", "multipliers": { "default": 1.0 } },
+    { "key": "coal", "id": 20, "break_seconds": 0.0, "texture": "items/misc/coal.png", "multipliers": { "default": 1.0 } },
+    { "key": "iron_ingot", "id": 22, "break_seconds": 0.0, "texture": "items/ore/iron_ingot.png", "multipliers": { "default": 1.0 } },
+    { "key": "diamond_ore", "id": 23, "break_seconds": 2.4, "texture": "blocks/ore/diamond_ore.png", "multipliers": { "default": 1.0 } },
+    { "key": "diamond", "id": 24, "break_seconds": 0.0, "texture": "items/ore/diamond.png", "multipliers": { "default": 1.0 } },
+
+    {
+      "key": "wooden_pickaxe",
+      "id": 1001,
+      "durability": 170,
+      "texture": "items/pickaxe/wood_pickaxe.png",
+      "multipliers": {
+        "default": 1.0,
+        "stone": 2.0,
+        "coal_ore": 2.0,
+        "iron_ore": 2.0,
+        "copper_ore": 2.0,
+        "diamond_ore": 2.0,
+        "furnace": 2.0
+      }
+    },
+    {
+      "key": "wooden_axe",
+      "id": 1002,
+      "durability": 170,
+      "texture": "items/axe/wood_axe.png",
+      "multipliers": {
+        "default": 1.0,
+        "log": 2.1,
+        "log_bottom": 2.1,
+        "workbench": 2.1,
+        "leaves": 2.1,
+        "wood": 2.1
+      }
+    },
+    {
+      "key": "wooden_shovel",
+      "id": 1003,
+      "durability": 170,
+      "multipliers": {
+        "default": 1.0,
+        "dirt": 2.0,
+        "grass": 2.0,
+        "farmland_dry": 2.0,
+        "farmland_wet": 2.0,
+        "sand": 2.0
+      }
+    },
+    {
+      "key": "wooden_hoe",
+      "id": 1004,
+      "durability": 170,
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "wood_sword",
+      "id": 1005,
+      "texture": "items/sword/wood_sword.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "stone_sword",
+      "id": 1006,
+      "durability": 320,
+      "texture": "items/sword/stone_sword.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "iron_sword",
+      "id": 1007,
+      "durability": 620,
+      "texture": "items/sword/iron_sword.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "gold_sword",
+      "id": 1008,
+      "texture": "items/sword/gold_sword.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "diamond_sword",
+      "id": 1009,
+      "texture": "items/sword/diamond_sword.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "stone_pickaxe",
+      "id": 1010,
+      "durability": 320,
+      "texture": "items/pickaxe/stone_pickaxe.png",
+      "multipliers": {
+        "default": 1.0,
+        "stone": 3.1,
+        "coal_ore": 3.1,
+        "iron_ore": 3.1,
+        "copper_ore": 3.1,
+        "diamond_ore": 3.1,
+        "furnace": 3.1
+      }
+    },
+    {
+      "key": "iron_pickaxe",
+      "id": 1011,
+      "durability": 620,
+      "texture": "items/pickaxe/iron_pickaxe.png",
+      "multipliers": {
+        "default": 1.0,
+        "stone": 4.2,
+        "coal_ore": 4.2,
+        "iron_ore": 4.2,
+        "copper_ore": 4.2,
+        "diamond_ore": 4.2,
+        "furnace": 4.2
+      }
+    },
+    {
+      "key": "gold_pickaxe",
+      "id": 1012,
+      "texture": "items/pickaxe/gold_pickaxe.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "diamond_pickaxe",
+      "id": 1013,
+      "texture": "items/pickaxe/diamond_pickaxe.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "stone_axe",
+      "id": 1014,
+      "durability": 320,
+      "texture": "items/axe/stone_axe.png",
+      "multipliers": {
+        "default": 1.0,
+        "log": 2.8,
+        "log_bottom": 2.8,
+        "workbench": 2.8,
+        "leaves": 2.8,
+        "wood": 2.8
+      }
+    },
+    {
+      "key": "stone_shovel",
+      "id": 1018,
+      "durability": 320,
+      "texture": "items/shovel/stone_shovel.png",
+      "multipliers": {
+        "default": 1.0,
+        "dirt": 2.6,
+        "grass": 2.6,
+        "farmland_dry": 2.6,
+        "farmland_wet": 2.6,
+        "sand": 2.6
+      }
+    },
+    {
+      "key": "stone_hoe",
+      "id": 1019,
+      "durability": 320,
+      "texture": "items/hoe/stone_hoe.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "iron_axe",
+      "id": 1015,
+      "durability": 620,
+      "texture": "items/axe/iron_axe.png",
+      "multipliers": {
+        "default": 1.0,
+        "log": 3.6,
+        "log_bottom": 3.6,
+        "workbench": 3.6,
+        "leaves": 3.6,
+        "wood": 3.6
+      }
+    },
+    {
+      "key": "iron_shovel",
+      "id": 1020,
+      "durability": 620,
+      "texture": "items/shovel/iron_shovel.png",
+      "multipliers": {
+        "default": 1.0,
+        "dirt": 3.3,
+        "grass": 3.3,
+        "farmland_dry": 3.3,
+        "farmland_wet": 3.3,
+        "sand": 3.3
+      }
+    },
+    {
+      "key": "iron_hoe",
+      "id": 1021,
+      "durability": 620,
+      "texture": "items/hoe/iron_hoe.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "diamond_axe",
+      "id": 1016,
+      "texture": "items/axe/diamond_axe.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "diamond_shovel",
+      "id": 1022,
+      "texture": "items/shovel/diamond_shovel.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "diamond_hoe",
+      "id": 1023,
+      "texture": "items/hoe/diamond_hoe.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    },
+    {
+      "key": "torch",
+      "id": 21,
+      "break_seconds": 0.2,
+      "texture": "items/misc/torch.png",
+      "multipliers": {
+        "default": 1.0
+      }
+    }
+  ]
+}

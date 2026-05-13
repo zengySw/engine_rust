@@ -5,7 +5,6 @@ pub struct Camera {
     pub yaw:   f32,    // поворот по горизонтали (градусы)
     pub pitch: f32,    // поворот по вертикали   (градусы)
     pub fov:   f32,    // поле зрения
-    pub speed: f32,
     pub sensitivity: f32,
 }
 
@@ -16,7 +15,6 @@ impl Camera {
             yaw:   -90.0,
             pitch:   0.0,
             fov:    70.0,
-            speed:   8.0,
             sensitivity: 0.15,
         }
     }
